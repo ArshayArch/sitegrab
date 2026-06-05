@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SiteGrab — OSM site data to Rhino &amp; AutoCAD</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a212b;
+    --panel-2: #222c38;
+    --accent: #4f9dff;
+    --accent-hover: #6cb0ff;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --border: #2d3744;
+    --error: #ff6b6b;
+    --ok: #4fd18b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #1b2735 0%, var(--bg) 60%);
+    color: var(--text);
+  }
+  .wrap {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 7vh 20px 40px;
+  }
+  header h1 {
+    font-size: 2.2rem;
+    margin: 0 0 6px;
+    letter-spacing: -0.02em;
+  }
+  header p {
+    margin: 0 0 28px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+  }
+  label.field-label {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  input[type="text"] {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 1.05rem;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    outline: none;
+    transition: border-color .15s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  .formats {
+    display: flex;
+    gap: 12px;
+    margin: 18px 0 22px;
+    flex-wrap: wrap;
+  }
+  .toggle {
+    flex: 1 1 200px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color .15s, background .15s;
+  }
+  .toggle:hover { border-color: var(--accent); }
+  .toggle.active { border-color: var(--accent); background: #243244; }
+  .toggle input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+  .toggle .t-title { font-weight: 600; font-size: 0.95rem; }
+  .toggle .t-sub { font-size: 0.78rem; color: var(--muted); }
+  button.generate {
+    width: 100%;
+    padding: 15px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #08121f;
+    background: var(--accent);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  button.generate:hover:not(:disabled) { background: var(--accent-hover); }
+  button.generate:disabled { opacity: .55; cursor: not-allowed; }
+  .status {
+    margin-top: 20px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    display: none;
+  }
+  .status.show { display: block; }
+  .status.loading { color: var(--muted); }
+  .status.error { color: var(--error); }
+  .status.success { color: var(--ok); }
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: -3px;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer {
+    margin-top: 24px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>SiteGrab</h1>
+    <p>Type an area name and download live site data as a Rhino 3D model and / or an AutoCAD 2D drawing, built straight from OpenStreetMap.</p>
+  </header>
+
+  <div class="card">
+    <label class="field-label" for="area">Area name</label>
+    <input type="text" id="area" placeholder="e.g. Dubai Marina" autocomplete="off" />
+
+    <div class="formats">
+      <label class="toggle active" id="tog-rhino">
+        <input type="checkbox" id="fmt-rhino" checked />
+        <span>
+          <span class="t-title">3D Rhino model</span><br />
+          <span class="t-sub">.3dm — buildings, roads, water</span>
+        </span>
+      </label>
+      <label class="toggle active" id="tog-dxf">
+        <input type="checkbox" id="fmt-dxf" checked />
+        <span>
+          <span class="t-title">2D AutoCAD drawing</span><br />
+          <span class="t-sub">.dxf — detailed basemap</span>
+        </span>
+      </label>
+    </div>
+
+    <button class="generate" id="generate">Generate</button>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <footer>
+    Detailed areas can take up to a couple of minutes. On the free hosting tier the
+    very first request after idle also needs ~30–50s to wake the server, so please be patient.<br />
+    Data &copy; OpenStreetMap contributors.
+  </footer>
+</div>
+
+<script>
+  const areaInput = document.getElementById("area");
+  const fmtRhino = document.getElementById("fmt-rhino");
+  const fmtDxf = document.getElementById("fmt-dxf");
+  const togRhino = document.getElementById("tog-rhino");
+  const togDxf = document.getElementById("tog-dxf");
+  const btn = document.getElementById("generate");
+  const status = document.getElementById("status");
+
+  function syncToggle(cb, tog) {
+    tog.classList.toggle("active", cb.checked);
+  }
+  fmtRhino.addEventListener("change", () => syncToggle(fmtRhino, togRhino));
+  fmtDxf.addEventListener("change", () => syncToggle(fmtDxf, togDxf));
+
+  function setStatus(kind, html) {
+    status.className = "status show " + kind;
+    status.innerHTML = html;
+  }
+
+  async function generate() {
+    const area = areaInput.value.trim();
+    if (!area) {
+      setStatus("error", "Please enter an area name.");
+      return;
+    }
+    const formats = [];
+    if (fmtRhino.checked) formats.push("rhino");
+    if (fmtDxf.checked) formats.push("dxf");
+    if (formats.length === 0) {
+      setStatus("error", "Select at least one format.");
+      return;
+    }
+
+    btn.disabled = true;
+    setStatus(
+      "loading",
+      '<span class="spinner"></span>Fetching OpenStreetMap data and building your file(s). ' +
+      'This can take up to a couple of minutes for dense areas — keep this tab open.'
+    );
+
+    try {
+      const resp = await fetch("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ area, formats }),
+      });
+
+      if (!resp.ok) {
+        let msg = "Something went wrong (HTTP " + resp.status + ").";
+        try {
+          const err = await resp.json();
+          if (err && err.detail) msg = err.detail;
+        } catch (_) {}
+        setStatus("error", "❌ " + msg);
+        return;
+      }
+
+      // Derive filename from the Content-Disposition header if present.
+      let filename = "sitegrab_download";
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?/i);
+      if (m) filename = decodeURIComponent(m[1]);
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setStatus("success", "✓ Done — your download should have started (" + filename + ").");
+    } catch (e) {
+      setStatus("error", "❌ Network error: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener("click", generate);
+  areaInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") generate();
+  });
+</script>
+</body>
+</html>
