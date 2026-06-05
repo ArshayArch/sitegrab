@@ -1,0 +1,16 @@
+# Render Blueprint for SiteGrab.
+# Deploy by pushing this repo to GitHub, then in the Render dashboard:
+#   New +  ->  Blueprint  ->  pick this repository.
+# Render reads this file, builds the Docker image and starts the web service.
+services:
+  - type: web
+    name: sitegrab
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # Render injects PORT automatically; the Dockerfile CMD reads it.
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
