@@ -1,0 +1,11 @@
+.venv
+.venv311
+__pycache__
+*.pyc
+.git
+.gitignore
+*.3dm
+*.dxf
+*.zip
+README.md
+.DS_Store

@@ -1,0 +1,24 @@
+# Virtual environments
+.venv/
+.venv311/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Generated site files / local test artifacts
+*.3dm
+*.dxf
+*.zip
+sitegrab_*/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code local settings
+.claude/settings.local.json
