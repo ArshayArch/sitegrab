@@ -4,6 +4,10 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SiteGrab — real site data for any area in the world</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+      crossorigin="" referrerpolicy="no-referrer" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+      crossorigin="" referrerpolicy="no-referrer" />
 <style>
   :root {
     --paper: #f7f6f2;
@@ -76,7 +80,26 @@
     margin-bottom: 10px;
   }
 
-  /* ---- input ---- */
+  /* ---- tabs ---- */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tab {
+    appearance: none; background: none; border: none; cursor: pointer;
+    font-family: var(--sans); font-size: 0.95rem; font-weight: 600; color: var(--muted);
+    padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .rec-dot {
+    font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--accent); margin-left: 7px; vertical-align: 1px;
+  }
+  .tabpane[hidden] { display: none; }
+
+  /* ---- text input ---- */
   #area {
     width: 100%;
     padding: 15px 16px;
@@ -91,6 +114,47 @@
   }
   #area:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   #area::placeholder { color: var(--faint); }
+
+  /* ---- map search row ---- */
+  .map-search { display: flex; gap: 8px; margin-bottom: 12px; }
+  .map-search input {
+    flex: 1; padding: 12px 14px; font-size: 1rem; font-family: var(--sans);
+    background: var(--paper); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  .map-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .map-search input::placeholder { color: var(--faint); }
+  .map-search button {
+    flex: none; padding: 0 16px; font-weight: 600; font-family: var(--sans); font-size: 0.92rem;
+    color: var(--accent); background: var(--card); border: 1px solid var(--accent);
+    border-radius: var(--radius); cursor: pointer; transition: background .15s, color .15s;
+  }
+  .map-search button:hover { background: var(--accent); color: #fff; }
+  .map-search button:disabled { opacity: .5; cursor: progress; }
+
+  /* ---- map ---- */
+  #map {
+    width: 100%; height: 440px;
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+    background: var(--paper); z-index: 0;
+  }
+  @media (max-width: 560px) { #map { height: 360px; } }
+  .leaflet-container { font-family: var(--sans); }
+
+  /* ---- readout ---- */
+  .readout {
+    margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 11px 14px; background: var(--paper); min-height: 44px;
+  }
+  .readout .dims { font-family: var(--mono); font-size: 0.92rem; font-weight: 600; color: var(--ink); }
+  .readout .est { font-size: 0.86rem; color: var(--muted); }
+  .readout .est.light { color: var(--ok); }
+  .readout .est.moderate { color: var(--accent); }
+  .readout .est.large { color: var(--error); }
+  .readout .hint { font-size: 0.9rem; color: var(--faint); font-style: italic; }
+  .readout .grow { flex: 1; }
+  .maptools { margin-top: 8px; }
 
   /* ---- toggle cards ---- */
   .formats { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 22px 0 4px; }
@@ -174,6 +238,7 @@
     font-family: var(--mono); letter-spacing: 0.02em; padding: 4px 6px; border-radius: 3px;
   }
   .linkbtn:hover { background: var(--accent-soft); }
+  .linkbtn:disabled { color: var(--faint); cursor: default; background: none; }
   .editrow { display: flex; gap: 8px; width: 100%; }
   .editrow input {
     flex: 1; padding: 10px 12px; font-size: 1rem; font-family: var(--sans);
@@ -241,8 +306,33 @@
   </header>
 
   <div class="card">
-    <label class="label" for="area">Area</label>
-    <input type="text" id="area" autocomplete="off" spellcheck="false" placeholder="Shibuya, Tokyo" />
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="map" type="button">Draw on map<span class="rec-dot">Recommended</span></button>
+      <button class="tab" data-tab="name" type="button">Search by name</button>
+    </div>
+
+    <!-- DRAW ON MAP -->
+    <div class="tabpane" id="pane-map">
+      <label class="label">Find &amp; draw your site</label>
+      <div class="map-search">
+        <input type="text" id="mapSearch" autocomplete="off" spellcheck="false"
+               placeholder="Search for a place to zoom to…" />
+        <button id="mapSearchBtn" type="button">Search</button>
+      </div>
+      <div id="map"></div>
+      <div class="readout" id="readout">
+        <span class="hint">Use the ▭ rectangle tool (top-left of the map), then drag to draw your site.</span>
+      </div>
+      <div class="maptools">
+        <button class="linkbtn" id="clearBox" type="button" disabled>Clear box</button>
+      </div>
+    </div>
+
+    <!-- SEARCH BY NAME -->
+    <div class="tabpane" id="pane-name" hidden>
+      <label class="label" for="area">Area</label>
+      <input type="text" id="area" autocomplete="off" spellcheck="false" placeholder="Shibuya, Tokyo" />
+    </div>
 
     <div class="formats" id="formats">
       <div class="toggle active" data-fmt="combined" role="checkbox" aria-checked="true" tabindex="0">
@@ -298,9 +388,14 @@
   <footer>
     Built on OpenStreetMap data. For personal and light professional use.<br />
     Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
+    Geocoding &amp; search by <a href="https://nominatim.org/" target="_blank" rel="noopener">Nominatim</a>.
   </footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+        crossorigin="" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"
+        crossorigin="" referrerpolicy="no-referrer"></script>
 <script>
 (function () {
   "use strict";
@@ -312,7 +407,6 @@
   };
   const PLACEHOLDERS = ["Shibuya, Tokyo", "Marais, Paris", "Brera, Milan", "Hackney Wick, London", "Downtown Brooklyn"];
   const LOADING_MSGS = [
-    "Geocoding your area…",
     "Pulling OpenStreetMap data…",
     "Building 3D massing…",
     "Laying out 2D linework…",
@@ -325,13 +419,35 @@
   const iterSection = $("iterSection"), iterArea = $("iterArea"), iterbar = $("iterbar");
   const resultsSection = $("resultsSection"), downloads = $("downloads");
   const briefSection = $("briefSection"), briefBody = $("briefBody"), briefActions = $("briefActions");
+  const mapSearch = $("mapSearch"), mapSearchBtn = $("mapSearchBtn"), readout = $("readout"), clearBoxBtn = $("clearBox");
 
   let blobUrls = [];          // live object URLs, revoked on reset
-  let currentArea = "";       // area of the last successful run
+  let currentArea = "";       // display label of the last successful run
+  let currentBriefArea = "";  // name sent to /brief (may differ from label on the box path)
+  let currentKind = "name";   // 'name' | 'bbox' of the last successful run
   let briefMode = "short";
   let busy = false;
 
-  // ---- cycling placeholder ----
+  let activeTab = "map";      // 'map' | 'name'
+  let drawnBounds = null;     // Leaflet LatLngBounds of the current rectangle, or null
+  let lastSearchLabel = "";   // last successful map search term (brief fallback)
+
+  // ---- tabs ----
+  document.querySelectorAll("#tabs .tab").forEach((tab) => {
+    tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+  });
+  function switchTab(name) {
+    activeTab = name;
+    document.querySelectorAll("#tabs .tab").forEach((t) =>
+      t.classList.toggle("active", t.dataset.tab === name));
+    $("pane-map").hidden = name !== "map";
+    $("pane-name").hidden = name !== "name";
+    clearStatus();
+    if (name === "map" && map) { setTimeout(() => map.invalidateSize(), 0); }
+    if (name === "name") areaInput.focus();
+  }
+
+  // ---- cycling placeholder (name input only) ----
   let phIdx = 0;
   setInterval(() => {
     if (document.activeElement === areaInput || areaInput.value) return;
@@ -339,7 +455,137 @@
     areaInput.placeholder = PLACEHOLDERS[phIdx];
   }, 3200);
 
-  // ---- toggle cards ----
+  // ========================================================================
+  //  MAP
+  // ========================================================================
+  let map = null, rectLayer = null;
+
+  function initMap() {
+    map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([25.078, 55.14], 14);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+
+    // Rectangle-only toolbar. Keeping the draw tool on the toolbar (rather than a
+    // permanently-armed drawer) leaves normal drag-to-pan / scroll-to-zoom intact;
+    // the user clicks the ▭ tool, then drags to draw. Every other tool is disabled
+    // and only one rectangle exists at a time (a new draw replaces the old one).
+    const drawControl = new L.Control.Draw({
+      position: "topleft",
+      draw: {
+        polyline: false, polygon: false, circle: false, marker: false, circlemarker: false,
+        rectangle: {
+          shapeOptions: { color: "#2f4a6b", weight: 2, fillColor: "#2f4a6b", fillOpacity: 0.12 },
+          metric: true,
+        },
+      },
+      edit: false,
+    });
+    map.addControl(drawControl);
+
+    map.on(L.Draw.Event.CREATED, (e) => setRectangle(e.layer));
+  }
+
+  function setRectangle(layer) {
+    if (rectLayer) map.removeLayer(rectLayer);
+    rectLayer = layer;
+    map.addLayer(rectLayer);
+    drawnBounds = rectLayer.getBounds();
+    clearBoxBtn.disabled = false;
+    updateReadout();
+  }
+
+  function clearBox() {
+    if (rectLayer) { map.removeLayer(rectLayer); rectLayer = null; }
+    drawnBounds = null;
+    clearBoxBtn.disabled = true;
+    updateReadout();
+  }
+  clearBoxBtn.addEventListener("click", clearBox);
+
+  // ---- size readout + estimate (latitude-corrected, same formula as backend) ----
+  function bboxDimsKm(b) {
+    const s = b.getSouth(), n = b.getNorth(), w = b.getWest(), e = b.getEast();
+    const meanLat = ((s + n) / 2) * Math.PI / 180;
+    const width = Math.abs(e - w) * 111.32 * Math.cos(meanLat);
+    const height = Math.abs(n - s) * 111.32;
+    return { width, height };
+  }
+  function fmtKm(v) { return (v < 10 ? v.toFixed(1) : Math.round(v)) + " km"; }
+
+  function updateReadout() {
+    if (!drawnBounds) {
+      readout.innerHTML = '<span class="hint">Use the ▭ rectangle tool (top-left of the map), then drag to draw your site.</span>';
+      return;
+    }
+    const { width, height } = bboxDimsKm(drawnBounds);
+    const maxSide = Math.max(width, height);
+    let cls, msg;
+    if (maxSide < 3) {
+      cls = "light"; msg = "Light — fast generation.";
+    } else if (maxSide <= 6) {
+      cls = "moderate"; msg = "Moderate — may take a minute.";
+    } else {
+      cls = "large";
+      msg = "Large — this may take several minutes and could be heavy on the free server. " +
+            "Consider a smaller box for faster results.";
+    }
+    readout.innerHTML =
+      '<span class="dims">' + fmtKm(width) + " × " + fmtKm(height) + '</span>' +
+      '<span class="grow"></span>' +
+      '<span class="est ' + cls + '">' + msg + '</span>';
+  }
+
+  // ---- Nominatim search: fly the map to a place ----
+  async function doSearch() {
+    const q = mapSearch.value.trim();
+    if (!q) { mapSearch.focus(); return; }
+    mapSearchBtn.disabled = true;
+    const oldLabel = mapSearchBtn.textContent;
+    mapSearchBtn.textContent = "…";
+    clearStatus();
+    try {
+      const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
+                  encodeURIComponent(q);
+      const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!resp.ok) throw new Error("search failed");
+      const data = await resp.json();
+      if (!data || !data.length) { showError('No place found for "' + q + '".'); return; }
+      lastSearchLabel = data[0].display_name || q;
+      // Nominatim boundingbox order: [south, north, west, east]
+      const bb = data[0].boundingbox;
+      if (bb && bb.length === 4) {
+        const s = +bb[0], n = +bb[1], w = +bb[2], e = +bb[3];
+        map.fitBounds([[s, w], [n, e]], { maxZoom: 16 });
+      } else {
+        map.setView([+data[0].lat, +data[0].lon], 15);
+      }
+    } catch (e) {
+      showError("Location search is unavailable right now. Try again shortly.");
+    } finally {
+      mapSearchBtn.disabled = false;
+      mapSearchBtn.textContent = oldLabel;
+    }
+  }
+  mapSearchBtn.addEventListener("click", doSearch);
+  mapSearch.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
+
+  // ---- reverse geocode a point -> a human label (for the brief on the box path) ----
+  async function reverseGeocode(lat, lon) {
+    try {
+      const url = "https://nominatim.openstreetmap.org/reverse?format=json&zoom=14&lat=" +
+                  lat + "&lon=" + lon;
+      const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!resp.ok) return "";
+      const data = await resp.json();
+      return (data && data.display_name) || "";
+    } catch (e) { return ""; }
+  }
+
+  // ========================================================================
+  //  TOGGLE CARDS
+  // ========================================================================
   document.querySelectorAll("#formats .toggle").forEach((tog) => {
     const cb = tog.querySelector("input");
     const flip = () => {
@@ -370,6 +616,7 @@
     }, 2600);
   }
   function stopLoading() { if (loadTimer) { clearInterval(loadTimer); loadTimer = null; } statusEl.className = "status"; statusEl.innerHTML = ""; }
+  function clearStatus() { stopLoading(); }
   function showError(msg) { stopLoading(); statusEl.className = "status show error"; statusEl.textContent = "⚠  " + msg; }
 
   // ---- filename from Content-Disposition ----
@@ -411,13 +658,14 @@
     el.querySelector("a.btn").remove();
   }
 
-  // ---- generate (one request per selected format -> one card each) ----
-  async function generate(area, formats) {
+  // ========================================================================
+  //  GENERATE
+  // ========================================================================
+  // source = { kind:'name', area, label } | { kind:'bbox', bbox:{s,w,n,e}, center:{lat,lng}, label }
+  async function generate(source, formats) {
     busy = true; genBtn.disabled = true;
     startLoading();
 
-    // Keep any prior results visible while the new ones build (for comparison).
-    // First run: show pending cards immediately. Regenerate: build off-DOM, swap at end.
     const haveOld = downloads.children.length > 0;
     const target = haveOld ? document.createElement("div") : downloads;
     if (!haveOld) resultsSection.hidden = false;
@@ -428,13 +676,19 @@
     const newUrls = [];
     let okCount = 0;
 
+    // Payload shared by every format request: a drawn bbox skips geocoding.
+    const payloadBase = source.kind === "bbox"
+      ? { bbox: source.bbox }
+      : { area: source.area };
+    const fallbackBase = source.kind === "bbox" ? "site" : source.area;
+
     // Run sequentially to stay polite to the public OSM servers.
     for (const fmt of formats) {
       try {
         const resp = await fetch("/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ area, formats: [fmt] }),
+          body: JSON.stringify(Object.assign({ formats: [fmt] }, payloadBase)),
         });
         if (!resp.ok) {
           let msg = "HTTP " + resp.status;
@@ -445,14 +699,13 @@
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         newUrls.push(url);
-        fillCard(cards[fmt], fmt, filenameFrom(resp, area + "." + FORMAT_META[fmt].ext.toLowerCase()), url, blob.size);
+        fillCard(cards[fmt], fmt, filenameFrom(resp, fallbackBase + "." + FORMAT_META[fmt].ext.toLowerCase()), url, blob.size);
         okCount++;
       } catch (e) {
         failCard(cards[fmt], "Network error");
       }
     }
 
-    // Swap in the fresh results and revoke the previous run's URLs.
     const oldUrls = blobUrls;
     blobUrls = newUrls;
     if (haveOld) {
@@ -467,25 +720,42 @@
 
     if (okCount === 0) { showError("Could not generate any files. See the cards above."); return false; }
 
-    currentArea = area;
-    showIterBar(area);
+    // Resolve a display label + brief subject. For the box path, reverse-geocode
+    // the centroid so the iteration bar and design brief still name a real place.
+    currentKind = source.kind;
+    let label = source.label || "";
+    let briefArea = label;
+    if (source.kind === "bbox") {
+      const rn = await reverseGeocode(source.center.lat, source.center.lng);
+      if (rn) { label = rn; briefArea = rn; }
+      if (!label) {
+        label = "Custom area (" + source.center.lat.toFixed(4) + ", " + source.center.lng.toFixed(4) + ")";
+        briefArea = label;
+      }
+    }
+    currentArea = label;
+    currentBriefArea = briefArea;
+    showIterBar(label);
     loadBrief("short");
     return true;
   }
 
   // ---- iteration bar ----
-  function showIterBar(area) {
-    iterArea.textContent = area;
+  function showIterBar(label) {
     iterSection.hidden = false;
     restoreIterButtons();
   }
   function restoreIterButtons() {
+    // The text-edit shortcut only makes sense on the name path; the box path
+    // edits its area by redrawing on the map, so we offer "Start fresh" only.
+    const editBtn = currentKind === "name"
+      ? '<button class="linkbtn" id="editBtn">Edit area</button>' : "";
     iterbar.innerHTML =
       '<span class="area-name" id="iterArea"></span><span class="grow"></span>' +
-      '<button class="linkbtn" id="editBtn">Edit area</button>' +
+      editBtn +
       '<button class="linkbtn" id="freshBtn">Start fresh</button>';
     $("iterArea").textContent = currentArea;
-    $("editBtn").addEventListener("click", enterEdit);
+    if (currentKind === "name") $("editBtn").addEventListener("click", enterEdit);
     $("freshBtn").addEventListener("click", startFresh);
   }
   function enterEdit() {
@@ -498,21 +768,22 @@
       const fmts = selectedFormats();
       if (!fmts.length) { restoreIterButtons(); showError("Select at least one format above."); return; }
       restoreIterButtons();
-      generate(v, fmts);
+      generate({ kind: "name", area: v, label: v }, fmts);
     };
     $("editGo").addEventListener("click", go);
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); if (e.key === "Escape") restoreIterButtons(); });
   }
   function startFresh() {
     revokeAll();
-    currentArea = "";
+    currentArea = ""; currentBriefArea = "";
     areaInput.value = "";
+    clearBox();
     iterSection.hidden = true;
     resultsSection.hidden = true;
     briefSection.hidden = true;
     downloads.innerHTML = "";
     stopLoading();
-    areaInput.focus();
+    if (activeTab === "name") areaInput.focus();
   }
   function revokeAll() { blobUrls.forEach((u) => URL.revokeObjectURL(u)); blobUrls = []; }
 
@@ -527,7 +798,7 @@
       const resp = await fetch("/brief", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ area: currentArea, display_name: currentArea, mode }),
+        body: JSON.stringify({ area: currentBriefArea, display_name: currentBriefArea, mode }),
       });
       if (!resp.ok) {
         let msg = "The design brief is unavailable right now.";
@@ -563,17 +834,37 @@
   // ---- main generate trigger ----
   function run() {
     if (busy) return;
-    const area = areaInput.value.trim();
-    if (!area) { showError("Please enter an area name."); areaInput.focus(); return; }
     const fmts = selectedFormats();
     if (!fmts.length) { showError("Select at least one output format."); return; }
-    generate(area, fmts);
+
+    if (activeTab === "map") {
+      if (!drawnBounds) { showError("Draw a rectangle on the map to set your site."); return; }
+      const b = drawnBounds;
+      const bbox = { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+      const c = b.getCenter();
+      generate({ kind: "bbox", bbox, center: { lat: c.lat, lng: c.lng }, label: lastSearchLabel }, fmts);
+    } else {
+      const area = areaInput.value.trim();
+      if (!area) { showError("Please enter an area name."); areaInput.focus(); return; }
+      generate({ kind: "name", area, label: area }, fmts);
+    }
   }
   genBtn.addEventListener("click", run);
   areaInput.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
 
-  // wire initial iter buttons (they get rebuilt on show, but in case)
   window.addEventListener("beforeunload", revokeAll);
+
+  // ---- boot ----
+  if (window.L && L.map) {
+    initMap();
+  } else {
+    // Leaflet CDN failed to load: fall back to the name path so the app still works.
+    switchTab("name");
+    document.querySelector('#tabs .tab[data-tab="map"]').disabled = true;
+    $("pane-map").innerHTML =
+      '<p style="color:var(--muted);font-size:0.9rem">The map could not be loaded. ' +
+      'Use “Search by name” instead.</p>';
+  }
 })();
 </script>
 </body>
