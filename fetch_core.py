@@ -10,6 +10,7 @@ to get wrong; they are correct as written here and must not be changed.
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.parse
 import urllib.request
@@ -20,6 +21,19 @@ from pyproj import Transformer
 UA: dict[str, str] = {
     "User-Agent": "sitegrab/1.0 (architectural site modelling; contact: kathpaliaarshay@gmail.com)"
 }
+
+# Reject bounding boxes larger than this (km) on either side. A city-scale fetch
+# (e.g. all of London) pulls hundreds of MB of OSM geometry and blows past the
+# 512MB free-tier memory budget, so we cap at a neighbourhood/district footprint.
+MAX_BBOX_KM: float = 5.0
+
+
+def bbox_dimensions_km(s: float, w: float, n: float, e: float) -> tuple[float, float]:
+    """Approximate the (width, height) of a WGS84 bounding box in kilometres."""
+    mean_lat = math.radians((s + n) / 2)
+    width = abs(e - w) * 111.32 * math.cos(mean_lat)
+    height = abs(n - s) * 111.32
+    return width, height
 
 # Public Overpass mirrors. Swap this list for a self-hosted / paid endpoint
 # to take load off the free public servers (see README, data-source etiquette).
@@ -41,6 +55,12 @@ def geocode(name: str) -> tuple[float, float, float, float, str]:
         raise ValueError(f"No location found for '{name}'")
     # Nominatim boundingbox order is: South, North, West, East
     s, n, w, e = map(float, data[0]["boundingbox"])
+    width_km, height_km = bbox_dimensions_km(s, w, n, e)
+    if width_km > MAX_BBOX_KM or height_km > MAX_BBOX_KM:
+        raise ValueError(
+            "This area is too large. Please try a smaller neighbourhood or "
+            "district, for example Shoreditch rather than London."
+        )
     return s, w, n, e, data[0]["display_name"]
 
 

@@ -21,6 +21,7 @@ comes from ``build_dxf``. This module only orchestrates them into one model.
 
 from __future__ import annotations
 
+import gc
 import uuid
 from typing import Any
 
@@ -111,7 +112,11 @@ def _build_3d_group(
         _add_child(model, nm, parent, rgb, cache)
 
     buildings = roads = water = 0
-    for el in data.get("elements", []):
+    # Drain the element list as we go so each parsed feature's raw geometry is
+    # released immediately, rather than holding the whole dataset until return.
+    elements = data.get("elements", [])
+    while elements:
+        el = elements.pop()
         if el.get("type") != "way":
             continue
         tags = el.get("tags", {})
@@ -175,7 +180,11 @@ def _build_linework_group(
         return _add_child(model, layer_name, parent, rgb, cache)
 
     objects = 0
-    for el in data.get("elements", []):
+    # Drain the element list as we go so each parsed feature's raw geometry is
+    # released immediately, rather than holding the whole dataset until return.
+    elements = data.get("elements", [])
+    while elements:
+        el = elements.pop()
         tags = el.get("tags", {})
         if not tags:
             continue
@@ -220,15 +229,22 @@ def build_combined(area: str, out_path: str) -> dict[str, Any]:
     bbox = f"{s},{w},{n},{e}"
     corners_ll = [(w, s), (e, s), (e, n), (w, n)]
 
-    # Two queries, same bbox, same transformer -> automatic spatial alignment.
-    lean = fetch_overpass(rh._QUERY_TEMPLATE.format(bbox=bbox))
-    detailed = fetch_overpass(dxf._QUERY_TEMPLATE.format(bbox=bbox))
-
     model = rhino3dm.File3dm()
     model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
 
+    # Process the two datasets sequentially so they never coexist in memory:
+    # fetch the lean set, build the 3D massing, then drop it *before* fetching
+    # the much larger detailed set. Both queries share the same bbox and
+    # transformer, so the resulting groups stay automatically aligned.
+    lean = fetch_overpass(rh._QUERY_TEMPLATE.format(bbox=bbox))
     g3d = _build_3d_group(model, lean, transformer, corners_ll)
+    del lean
+    gc.collect()
+
+    detailed = fetch_overpass(dxf._QUERY_TEMPLATE.format(bbox=bbox))
     glin = _build_linework_group(model, detailed, transformer)
+    del detailed
+    gc.collect()
 
     model.Write(out_path, 0)
 
