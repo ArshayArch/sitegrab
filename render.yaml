@@ -14,3 +14,9 @@ services:
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Required for the /brief design-brief endpoint (Anthropic Claude API).
+      # sync: false keeps the secret OUT of this repo — Render prompts for it on
+      # first deploy and you set it in the dashboard (Environment tab). The rest
+      # of the app (/generate) runs fine without it; only briefs need it.
+      - key: ANTHROPIC_API_KEY
+        sync: false
