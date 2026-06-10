@@ -98,6 +98,12 @@
     color: var(--accent); margin-left: 7px; vertical-align: 1px;
   }
   .tabpane[hidden] { display: none; }
+  @media (max-width: 440px) {
+    .wrap { padding: 40px 16px 48px; }
+    .card { padding: 18px; }
+    .tab { padding: 9px 8px; font-size: 0.9rem; }
+    .tab .rec-dot { display: none; }   /* keep both tabs on one row on phones */
+  }
 
   /* ---- text input ---- */
   #area {
