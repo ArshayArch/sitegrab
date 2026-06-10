@@ -1,7 +1,10 @@
 """SiteGrab FastAPI application.
 
-Serves the single-page frontend and exposes POST /generate, which runs the
-shared pipeline and streams back the requested .3dm and/or .dxf file(s).
+Serves the single-page frontend and exposes:
+  - POST /generate : runs the shared pipeline and streams back the requested
+    .3dm and/or .dxf file(s).
+  - POST /brief    : calls the Anthropic Claude API for a short or long,
+    architect-focused design brief about the area.
 """
 
 from __future__ import annotations
@@ -25,12 +28,38 @@ app = FastAPI(title="SiteGrab", description="OSM site data to Rhino / AutoCAD")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# The spec named claude-sonnet-4-20250514, but that model is deprecated and
+# retires 2026-06-15 — its documented drop-in replacement is claude-sonnet-4-6.
+# Kept as a single constant so the model is trivial to change.
+BRIEF_MODEL = "claude-sonnet-4-6"
+BRIEF_MAX_TOKENS = 800
+
+BRIEF_SYSTEM_PROMPT = (
+    "You are a senior architect and urban designer with deep knowledge of cities "
+    "worldwide.\n"
+    "A student or early-career designer has just pulled site data for the area described.\n"
+    "Write them a concise, insightful site analysis that feels like advice from a thoughtful\n"
+    "tutor — not a Wikipedia summary. Cover: what kind of urban fabric this is, its key spatial\n"
+    "characteristics, the grain and scale of the city here, any significant edges, landmarks,\n"
+    "or thresholds, and two or three genuine design opportunities or tensions a designer\n"
+    "starting here should hold in mind. Be specific to this place. Write in a direct,\n"
+    "intelligent tone. For 'short' mode: 150–200 words. For 'long' mode: 400–500 words."
+)
+
 
 class GenerateRequest(BaseModel):
     area: str = Field(..., min_length=1, description="Area name, e.g. 'Dubai Marina'")
     formats: list[str] = Field(
         ..., description="Any of 'combined', 'rhino', 'dxf'"
     )
+
+
+class BriefRequest(BaseModel):
+    area: str = Field(..., min_length=1, description="Area name, e.g. 'Dubai Marina'")
+    display_name: str = Field(
+        "", description="Full resolved name from geocoding (falls back to area)"
+    )
+    mode: str = Field("short", description="'short' or 'long'")
 
 
 def _slugify(name: str) -> str:
@@ -124,6 +153,77 @@ def generate(req: GenerateRequest):
         filename=f"{slug}_sitegrab.zip",
         background=BackgroundTask(_cleanup, tmpdir),
     )
+
+
+@app.post("/brief")
+def brief(req: BriefRequest):
+    """Generate an architect-focused design brief via the Anthropic Claude API."""
+    mode = req.mode.lower().strip()
+    if mode not in ("short", "long"):
+        raise HTTPException(
+            status_code=422, detail="mode must be 'short' or 'long'."
+        )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Design briefs are unavailable: ANTHROPIC_API_KEY is not configured "
+            "on the server.",
+        )
+
+    # Imported lazily so /generate works even if the anthropic package is absent.
+    import anthropic
+
+    display = req.display_name.strip() or req.area
+    client = anthropic.Anthropic(api_key=api_key, timeout=60.0)
+
+    try:
+        message = client.messages.create(
+            model=BRIEF_MODEL,
+            max_tokens=BRIEF_MAX_TOKENS,
+            system=BRIEF_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Area: {display}. Generate a {mode} design brief for this site.",
+                }
+            ],
+        )
+    except anthropic.AuthenticationError:
+        raise HTTPException(
+            status_code=502,
+            detail="The server's ANTHROPIC_API_KEY was rejected. Check the key.",
+        )
+    except anthropic.RateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="The design-brief service is rate limited right now. Try again shortly.",
+        )
+    except anthropic.APITimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="The design-brief request timed out. Try again.",
+        )
+    except anthropic.APIConnectionError:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the design-brief service. Try again.",
+        )
+    except anthropic.APIStatusError as ex:
+        raise HTTPException(
+            status_code=502,
+            detail=f"The design-brief service returned an error ({ex.status_code}).",
+        )
+
+    text = "".join(
+        block.text for block in message.content if getattr(block, "type", None) == "text"
+    ).strip()
+    if not text:
+        raise HTTPException(
+            status_code=502, detail="The design-brief service returned an empty response."
+        )
+    return {"brief": text}
 
 
 if __name__ == "__main__":
