@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from build_combined import build_combined
 from build_dxf import build_dxf
 from build_rhino import build_rhino
 
@@ -27,7 +28,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 class GenerateRequest(BaseModel):
     area: str = Field(..., min_length=1, description="Area name, e.g. 'Dubai Marina'")
-    formats: list[str] = Field(..., description="Any of 'rhino', 'dxf'")
+    formats: list[str] = Field(
+        ..., description="Any of 'combined', 'rhino', 'dxf'"
+    )
 
 
 def _slugify(name: str) -> str:
@@ -59,11 +62,12 @@ def health() -> dict[str, str]:
 @app.post("/generate")
 def generate(req: GenerateRequest):
     formats = [f.lower() for f in req.formats]
-    wanted = [f for f in formats if f in ("rhino", "dxf")]
+    # Preserve a stable, sensible order (headline combined first) and de-dupe.
+    wanted = [f for f in ("combined", "rhino", "dxf") if f in formats]
     if not wanted:
         raise HTTPException(
             status_code=422,
-            detail="Select at least one format: 'rhino' and/or 'dxf'.",
+            detail="Select at least one format: 'combined', 'rhino' and/or 'dxf'.",
         )
 
     slug = _slugify(req.area)
@@ -71,14 +75,18 @@ def generate(req: GenerateRequest):
     produced: list[tuple[str, str]] = []  # (path, download_name)
 
     try:
-        if "dxf" in wanted:
-            path = os.path.join(tmpdir, f"{slug}.dxf")
-            build_dxf(req.area, path)
-            produced.append((path, f"{slug}.dxf"))
+        if "combined" in wanted:
+            path = os.path.join(tmpdir, f"{slug}_combined.3dm")
+            build_combined(req.area, path)
+            produced.append((path, f"{slug}_combined.3dm"))
         if "rhino" in wanted:
             path = os.path.join(tmpdir, f"{slug}.3dm")
             build_rhino(req.area, path)
             produced.append((path, f"{slug}.3dm"))
+        if "dxf" in wanted:
+            path = os.path.join(tmpdir, f"{slug}.dxf")
+            build_dxf(req.area, path)
+            produced.append((path, f"{slug}.dxf"))
     except ValueError as ex:
         # Geocoding failure -> area not found.
         _cleanup(tmpdir)
