@@ -15,7 +15,7 @@ from typing import Any
 
 import rhino3dm
 
-from fetch_core import fetch_overpass, geocode, get_transformer
+from fetch_core import fetch_overpass, get_transformer, resolve_area
 
 DEFAULT_HEIGHT_M = 30.0
 LEVEL_HEIGHT_M = 3.5
@@ -88,12 +88,17 @@ def _road_layer(tags: dict[str, str]) -> str:
     return "ROADS_secondary"
 
 
-def build_rhino(area: str, out_path: str) -> dict[str, Any]:
-    """Fetch + build a lean 3D .3dm for ``area`` and write it to ``out_path``.
+def build_rhino(
+    area: str | None,
+    out_path: str,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
+    """Fetch + build a lean 3D .3dm and write it to ``out_path``.
 
-    Returns a stats dict (object/layer counts, EPSG, display name).
+    Resolves the footprint from an explicit ``bbox`` (south, west, north, east)
+    if given, otherwise geocodes ``area``. Returns a stats dict.
     """
-    s, w, n, e, display_name = geocode(area)
+    s, w, n, e, display_name = resolve_area(area, bbox)
     transformer, epsg = get_transformer(s, w, n, e)
     bbox = f"{s},{w},{n},{e}"
     data = fetch_overpass(_QUERY_TEMPLATE.format(bbox=bbox))

@@ -47,8 +47,20 @@ BRIEF_SYSTEM_PROMPT = (
 )
 
 
+class BBox(BaseModel):
+    south: float = Field(..., ge=-90, le=90)
+    west: float = Field(..., ge=-180, le=180)
+    north: float = Field(..., ge=-90, le=90)
+    east: float = Field(..., ge=-180, le=180)
+
+
 class GenerateRequest(BaseModel):
-    area: str = Field(..., min_length=1, description="Area name, e.g. 'Dubai Marina'")
+    area: str | None = Field(
+        None, description="Area name, e.g. 'Dubai Marina' (name-search path)"
+    )
+    bbox: BBox | None = Field(
+        None, description="Explicit bounding box drawn on the map (preferred if present)"
+    )
     formats: list[str] = Field(
         ..., description="Any of 'combined', 'rhino', 'dxf'"
     )
@@ -99,27 +111,41 @@ def generate(req: GenerateRequest):
             detail="Select at least one format: 'combined', 'rhino' and/or 'dxf'.",
         )
 
-    slug = _slugify(req.area)
+    # Resolve the input source: an explicit drawn bbox takes precedence over a
+    # typed name. Pass the bbox straight through to the pipeline (no geocoding).
+    bbox: tuple[float, float, float, float] | None = None
+    if req.bbox is not None:
+        bbox = (req.bbox.south, req.bbox.west, req.bbox.north, req.bbox.east)
+        slug = "custom_area"
+    elif req.area:
+        slug = _slugify(req.area)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either an area name or a bounding box.",
+        )
+
     tmpdir = tempfile.mkdtemp(prefix="sitegrab_")
     produced: list[tuple[str, str]] = []  # (path, download_name)
 
     try:
         if "combined" in wanted:
             path = os.path.join(tmpdir, f"{slug}_combined.3dm")
-            build_combined(req.area, path)
+            build_combined(req.area, path, bbox)
             produced.append((path, f"{slug}_combined.3dm"))
         if "rhino" in wanted:
             path = os.path.join(tmpdir, f"{slug}.3dm")
-            build_rhino(req.area, path)
+            build_rhino(req.area, path, bbox)
             produced.append((path, f"{slug}.3dm"))
         if "dxf" in wanted:
             path = os.path.join(tmpdir, f"{slug}.dxf")
-            build_dxf(req.area, path)
+            build_dxf(req.area, path, bbox)
             produced.append((path, f"{slug}.dxf"))
     except ValueError as ex:
-        # Geocoding failure -> area not found.
+        # Name path: geocoding failure -> 404. Bbox path: an invalid or
+        # oversized drawn box is a bad request -> 422.
         _cleanup(tmpdir)
-        raise HTTPException(status_code=404, detail=str(ex))
+        raise HTTPException(status_code=422 if bbox else 404, detail=str(ex))
     except RuntimeError as ex:
         # Overpass unavailable after retries.
         _cleanup(tmpdir)

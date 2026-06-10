@@ -29,7 +29,7 @@ import rhino3dm
 
 import build_dxf as dxf
 import build_rhino as rh
-from fetch_core import fetch_overpass, geocode, get_transformer
+from fetch_core import fetch_overpass, get_transformer, resolve_area
 
 # RGB palette for the Linework groups, keyed by the top-level DXF category.
 # (build_dxf uses AutoCAD Color Index integers; Rhino needs RGB, so we map the
@@ -218,13 +218,19 @@ def _build_linework_group(
     return {"objects": objects, "layers": len(cache)}
 
 
-def build_combined(area: str, out_path: str) -> dict[str, Any]:
+def build_combined(
+    area: str | None,
+    out_path: str,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
     """Fetch both datasets and write one aligned combined ``.3dm`` to ``out_path``.
 
-    Returns a stats dict (object/layer counts per group, EPSG, display name) and
-    runs a read-back verification of the structural invariants.
+    Resolves the footprint from an explicit ``bbox`` (south, west, north, east)
+    if given, otherwise geocodes ``area``. Returns a stats dict (object/layer
+    counts per group, EPSG, display name) and runs a read-back verification of
+    the structural invariants.
     """
-    s, w, n, e, display_name = geocode(area)
+    s, w, n, e, display_name = resolve_area(area, bbox)
     transformer, epsg = get_transformer(s, w, n, e)
     bbox = f"{s},{w},{n},{e}"
     corners_ll = [(w, s), (e, s), (e, n), (w, n)]

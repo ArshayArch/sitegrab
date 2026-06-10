@@ -25,7 +25,15 @@ UA: dict[str, str] = {
 # Reject bounding boxes larger than this (km) on either side. A city-scale fetch
 # (e.g. all of London) pulls hundreds of MB of OSM geometry and blows past the
 # 512MB free-tier memory budget, so we cap at a neighbourhood/district footprint.
+# This applies to the *name-search* path, where the user has not deliberately
+# chosen a footprint.
 MAX_BBOX_KM: float = 5.0
+
+# Absolute safety ceiling for the *explicit draw-on-map* path. The user drew the
+# box deliberately, so we don't enforce the neighbourhood cap — but a whole-country
+# box would still exhaust the 512MB free tier and crash the server, so we keep a
+# hard ceiling here.
+MAX_BBOX_KM_EXPLICIT: float = 15.0
 
 
 def bbox_dimensions_km(s: float, w: float, n: float, e: float) -> tuple[float, float]:
@@ -62,6 +70,42 @@ def geocode(name: str) -> tuple[float, float, float, float, str]:
             "district, for example Shoreditch rather than London."
         )
     return s, w, n, e, data[0]["display_name"]
+
+
+def resolve_area(
+    area: str | None,
+    bbox: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float, str]:
+    """Resolve either a name or an explicit bbox to (south, west, north, east, display_name).
+
+    When ``bbox`` (south, west, north, east) is given it is used directly — no
+    geocoding — and validated only against the absolute explicit ceiling
+    (``MAX_BBOX_KM_EXPLICIT``). When only ``area`` is given, behaviour is exactly
+    the existing name-search path, including the neighbourhood-scale cap.
+    ``bbox`` takes precedence if both are supplied.
+    """
+    if bbox is not None:
+        s, w, n, e = bbox
+        if not (n > s and e > w):
+            raise ValueError(
+                "Invalid bounding box: north must exceed south and east must exceed west."
+            )
+        width_km, height_km = bbox_dimensions_km(s, w, n, e)
+        if width_km > MAX_BBOX_KM_EXPLICIT or height_km > MAX_BBOX_KM_EXPLICIT:
+            raise ValueError(
+                f"This box is too large ({width_km:.1f} km x {height_km:.1f} km). "
+                f"The maximum is {MAX_BBOX_KM_EXPLICIT:.0f} km on a side — please draw "
+                "a smaller area."
+            )
+        display = (
+            f"Custom area "
+            f"({(s + n) / 2:.4f}, {(w + e) / 2:.4f}) "
+            f"{width_km:.1f}x{height_km:.1f} km"
+        )
+        return s, w, n, e, display
+    if not area:
+        raise ValueError("No area name or bounding box was provided.")
+    return geocode(area)
 
 
 def utm_epsg(lon: float, lat: float) -> int:

@@ -12,7 +12,7 @@ from typing import Any
 import ezdxf
 from ezdxf.document import Drawing
 
-from fetch_core import fetch_overpass, get_transformer
+from fetch_core import fetch_overpass, get_transformer, resolve_area
 
 # Top-level category -> AutoCAD Color Index, used to colour each layer.
 CATEGORY_COLORS: dict[str, int] = {
@@ -100,14 +100,17 @@ def _ensure_layer(doc: Drawing, name: str) -> None:
     doc.layers.add(name=name, color=color)
 
 
-def build_dxf(area: str, out_path: str) -> dict[str, Any]:
-    """Fetch + build a detailed DXF for ``area`` and write it to ``out_path``.
+def build_dxf(
+    area: str | None,
+    out_path: str,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
+    """Fetch + build a detailed DXF and write it to ``out_path``.
 
-    Returns a small stats dict (layer count, entity count, EPSG, display name).
+    Resolves the footprint from an explicit ``bbox`` (south, west, north, east)
+    if given, otherwise geocodes ``area``. Returns a small stats dict.
     """
-    from fetch_core import geocode
-
-    s, w, n, e, display_name = geocode(area)
+    s, w, n, e, display_name = resolve_area(area, bbox)
     transformer, epsg = get_transformer(s, w, n, e)
     bbox = f"{s},{w},{n},{e}"
     data = fetch_overpass(_QUERY_TEMPLATE.format(bbox=bbox))
