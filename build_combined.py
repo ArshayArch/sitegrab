@@ -1,27 +1,32 @@
-"""SiteGrab combined 3D + 2D Rhino writer.
+"""SiteGrab combined 3D + 2D + terrain Rhino writer.
 
-Produces a single ``.3dm`` that merges the lean 3D massing and the detailed 2D
-linework into one spatially aligned Rhino model:
+Produces a single ``.3dm`` that merges the lean 3D massing, the detailed 2D
+linework and (by default) the real topography into one spatially aligned model:
 
-- The **2D linework sits flat at Z=0** as a readable ground plane.
-- The **3D massing sits above it**, buildings extruded upward from Z=0.
-- Both datasets are reprojected with the *same* WGS84 -> UTM transformer (the
-  one auto-detected from the bbox centroid), so alignment is automatic. Neither
-  dataset is recentred or rescaled.
+- ``TERRAIN/`` -> ``surface`` (DEM mesh) + ``contours`` (true-elevation polylines).
+- ``3D/``      -> buildings draped onto the terrain (each base sits at the
+  LOWEST ground height under its footprint — buildings stay plumb, cutting
+  into the hill on the high side; see TOPO_RATIONALE.md), main roads draped
+  per-vertex, water, site boundary.
+- ``Linework/`` -> the granular DXF-style layers, kept FLAT as a clean plan
+  drawing at a datum just under the terrain (the site's lowest elevation,
+  floored to a whole metre) — the deliberate scope decision in
+  TOPO_RATIONALE.md. With terrain off, everything sits at Z=0 as before.
 
-The model is organised into two layer groups:
-
-- ``3D/``        -> BUILDINGS_extruded, ROADS_primary, ROADS_secondary, WATER, SITE_BOUNDARY
-- ``Linework/``  -> the granular DXF-style layers (BLDG_residential_PL, ROADS_footpath_LN, ...)
+All three datasets are reprojected with the *same* WGS84 -> UTM transformer
+(auto-detected from the bbox centroid), so alignment is automatic. Nothing is
+recentred or rescaled.
 
 The genuinely subtle logic is *reused, not rewritten*: building-height parsing,
 curve construction and extrusion come from ``build_rhino``; layer classification
-comes from ``build_dxf``. This module only orchestrates them into one model.
+comes from ``build_dxf``; the terrain mesh/contours come from ``build_terrain``.
+This module only orchestrates them into one model.
 """
 
 from __future__ import annotations
 
 import gc
+import math
 import uuid
 from typing import Any
 
@@ -29,7 +34,9 @@ import rhino3dm
 
 import build_dxf as dxf
 import build_rhino as rh
+from build_terrain import add_terrain
 from fetch_core import fetch_overpass, get_transformer, resolve_area
+from fetch_elevation import ElevationGrid, fetch_elevation_grid
 
 # RGB palette for the Linework groups, keyed by the top-level DXF category.
 # (build_dxf uses AutoCAD Color Index integers; Rhino needs RGB, so we map the
@@ -48,7 +55,9 @@ LINEWORK_COLORS: dict[str, tuple[int, int, int]] = {
     "LABEL": (200, 200, 200),
 }
 
-GROUND_Z = 0.0  # linework + building footprints sit on the ground plane
+# With terrain OFF everything sits on the Z=0 plane (original behaviour).
+# With terrain ON the flat datum becomes the site's lowest elevation instead.
+FLAT_GROUND_Z = 0.0
 
 
 def _ensure_ccw(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -104,14 +113,24 @@ def _build_3d_group(
     data: dict[str, Any],
     transformer: Any,
     corners_ll: list[tuple[float, float]],
-) -> dict[str, int]:
-    """Populate the ``3D/`` group from the LEAN dataset, reusing build_rhino logic."""
+    grid: ElevationGrid | None = None,
+    datum: float = FLAT_GROUND_Z,
+) -> dict[str, Any]:
+    """Populate the ``3D/`` group from the LEAN dataset, reusing build_rhino logic.
+
+    With an elevation ``grid``, each building's base is set to the LOWEST
+    ground height under its footprint (the building stays plumb and cuts into
+    the slope — see TOPO_RATIONALE.md), main roads drape per-vertex, and water
+    sits flat at the lowest ground under its outline. Without a grid the
+    original flat behaviour at ``datum`` (Z=0) is unchanged.
+    """
     parent = _add_parent(model, "3D", (200, 200, 200))
     cache: dict[str, int] = {}
     for nm, rgb in rh._LAYERS.items():  # pre-create the five massing layers
         _add_child(model, nm, parent, rgb, cache)
 
     buildings = roads = water = 0
+    base_z_samples: list[float] = []  # first few building bases, for verification
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
     elements = data.get("elements", [])
@@ -126,50 +145,80 @@ def _build_3d_group(
         pts = [transformer.transform(p["lon"], p["lat"]) for p in geom]
 
         if "building" in tags:
-            curve = rh._closed_curve(_ensure_ccw(pts), GROUND_Z)
+            base = (
+                min(grid.sample(p["lon"], p["lat"]) for p in geom)
+                if grid is not None
+                else datum
+            )
+            curve = rh._closed_curve(_ensure_ccw(pts), base)
             if curve is None or not curve.IsClosed:
                 continue
             height = rh._parse_height(tags)
             extrusion = rhino3dm.Extrusion.Create(curve, height, True)
             if extrusion is None:
                 continue
-            # Profile lies in the XY plane, so positive height extrudes +Z (upward).
+            # Profile lies in a horizontal plane, so positive height extrudes
+            # +Z (upward) from the base level.
             model.Objects.AddExtrusion(extrusion, _attrs(cache["BUILDINGS_extruded"]))
+            if len(base_z_samples) < 10:
+                base_z_samples.append(base)
             buildings += 1
 
         elif "highway" in tags:
             layer = rh._road_layer(tags)
-            curve = rh._open_curve(pts, rh.ROAD_Z)
+            if grid is not None:
+                # Drape the road per-vertex so it follows the hillside.
+                pl = rhino3dm.Polyline()
+                for (x, y), p in zip(pts, geom):
+                    pl.Add(x, y, grid.sample(p["lon"], p["lat"]) + rh.ROAD_Z)
+                curve = pl.ToPolylineCurve() if pl.Count >= 2 else None
+            else:
+                curve = rh._open_curve(pts, rh.ROAD_Z)
             if curve is None:
                 continue
             model.Objects.AddCurve(curve, _attrs(cache[layer]))
             roads += 1
 
         elif tags.get("natural") == "water" or "waterway" in tags:
-            curve = rh._closed_curve(pts, GROUND_Z)
+            z_water = (
+                min(grid.sample(p["lon"], p["lat"]) for p in geom)
+                if grid is not None
+                else datum
+            )
+            curve = rh._closed_curve(pts, z_water)
             if curve is None:
                 continue
             model.Objects.AddCurve(curve, _attrs(cache["WATER"]))
             water += 1
 
-    # Site boundary rectangle (reprojected bbox corners), flat at Z=0.
-    boundary = rh._closed_curve([transformer.transform(lon, lat) for lon, lat in corners_ll], GROUND_Z)
+    # Site boundary rectangle (reprojected bbox corners), flat at the datum.
+    boundary = rh._closed_curve([transformer.transform(lon, lat) for lon, lat in corners_ll], datum)
     if boundary is not None:
         model.Objects.AddCurve(boundary, _attrs(cache["SITE_BOUNDARY"]))
 
     total = buildings + roads + water + (1 if boundary is not None else 0)
-    return {"objects": total, "buildings": buildings, "roads": roads, "water": water}
+    return {
+        "objects": total,
+        "buildings": buildings,
+        "roads": roads,
+        "water": water,
+        "base_z_samples": base_z_samples,
+    }
 
 
 def _build_linework_group(
     model: rhino3dm.File3dm,
     data: dict[str, Any],
     transformer: Any,
+    datum: float = FLAT_GROUND_Z,
 ) -> dict[str, int]:
-    """Populate the ``Linework/`` group from the DETAILED dataset, flat at Z=0.
+    """Populate the ``Linework/`` group from the DETAILED dataset, flat at ``datum``.
 
-    Layer naming reuses ``build_dxf.classify`` exactly; geometry is drawn as
-    rhino3dm points (nodes) and polyline curves (ways) on the ground plane.
+    The linework deliberately stays planar (a drawing to trace/measure in
+    plan, not draped 3D noise — see TOPO_RATIONALE.md). With terrain on, the
+    datum is the site's lowest elevation; otherwise Z=0. Layer naming reuses
+    ``build_dxf.classify`` exactly; geometry is drawn as rhino3dm points
+    (nodes) and polyline curves (ways) on that plane.
     """
     parent = _add_parent(model, "Linework", (180, 180, 180))
     cache: dict[str, int] = {}
@@ -196,7 +245,7 @@ def _build_linework_group(
                 continue
             layer, _closed = result
             x, y = transformer.transform(el["lon"], el["lat"])
-            model.Objects.AddPoint(x, y, GROUND_Z, _attrs(resolve(layer)))
+            model.Objects.AddPoint(x, y, datum, _attrs(resolve(layer)))
             objects += 1
 
         elif etype == "way":
@@ -208,8 +257,8 @@ def _build_linework_group(
                 continue
             layer, closed = result
             pts = [transformer.transform(p["lon"], p["lat"]) for p in geom]
-            curve = (rh._closed_curve(pts, GROUND_Z) if closed
-                     else rh._open_curve(pts, GROUND_Z))
+            curve = (rh._closed_curve(pts, datum) if closed
+                     else rh._open_curve(pts, datum))
             if curve is None:
                 continue
             model.Objects.AddCurve(curve, _attrs(resolve(layer)))
@@ -222,13 +271,16 @@ def build_combined(
     area: str | None,
     out_path: str,
     bbox: tuple[float, float, float, float] | None = None,
+    terrain: bool = True,
 ) -> dict[str, Any]:
-    """Fetch both datasets and write one aligned combined ``.3dm`` to ``out_path``.
+    """Fetch all datasets and write one aligned combined ``.3dm`` to ``out_path``.
 
     Resolves the footprint from an explicit ``bbox`` (south, west, north, east)
-    if given, otherwise geocodes ``area``. Returns a stats dict (object/layer
-    counts per group, EPSG, display name) and runs a read-back verification of
-    the structural invariants.
+    if given, otherwise geocodes ``area``. With ``terrain`` (default) the model
+    gains the ``TERRAIN/`` group and the massing is draped onto the ground;
+    without it, the original flat Z=0 model is produced. Returns a stats dict
+    (object/layer counts per group, EPSG, display name) and runs a read-back
+    verification of the structural invariants.
     """
     s, w, n, e, display_name = resolve_area(area, bbox)
     transformer, epsg = get_transformer(s, w, n, e)
@@ -238,17 +290,27 @@ def build_combined(
     model = rhino3dm.File3dm()
     model.Settings.ModelUnitSystem = rhino3dm.UnitSystem.Meters
 
-    # Process the two datasets sequentially so they never coexist in memory:
-    # fetch the lean set, build the 3D massing, then drop it *before* fetching
-    # the much larger detailed set. Both queries share the same bbox and
-    # transformer, so the resulting groups stay automatically aligned.
+    # Terrain first: the grid is needed while draping the 3D massing, and the
+    # flat-linework datum (lowest site elevation, floored) comes from it.
+    grid = None
+    datum = FLAT_GROUND_Z
+    tstats: dict[str, Any] = {}
+    if terrain:
+        grid = fetch_elevation_grid(s, w, n, e)
+        datum = float(math.floor(grid.zmin))
+        tstats = add_terrain(model, grid, transformer)
+
+    # Process the two OSM datasets sequentially so they never coexist in
+    # memory: fetch the lean set, build the 3D massing (draped via the grid),
+    # then drop both *before* fetching the much larger detailed set. All
+    # queries share the same bbox and transformer, so the groups stay aligned.
     lean = fetch_overpass(rh._QUERY_TEMPLATE.format(bbox=bbox))
-    g3d = _build_3d_group(model, lean, transformer, corners_ll)
-    del lean
+    g3d = _build_3d_group(model, lean, transformer, corners_ll, grid, datum)
+    del lean, grid
     gc.collect()
 
     detailed = fetch_overpass(dxf._QUERY_TEMPLATE.format(bbox=bbox))
-    glin = _build_linework_group(model, detailed, transformer)
+    glin = _build_linework_group(model, detailed, transformer, datum)
     del detailed
     gc.collect()
 
@@ -261,6 +323,7 @@ def build_combined(
     groups = {lay.Name for lay in check.Layers}
     has_3d = "3D" in groups
     has_linework = "Linework" in groups
+    has_terrain = "TERRAIN" in groups
 
     return {
         "display_name": display_name,
@@ -272,43 +335,75 @@ def build_combined(
         "buildings": g3d["buildings"],
         "roads": g3d["roads"],
         "water": g3d["water"],
+        "base_z_samples": g3d["base_z_samples"],
+        "datum": datum,
         "has_3d_group": has_3d,
         "has_linework_group": has_linework,
+        "has_terrain_group": has_terrain,
+        "terrain": tstats,
     }
 
 
 if __name__ == "__main__":
     import sys
+    import tracemalloc
 
-    area = " ".join(sys.argv[1:]) or "Dubai Marina"
+    # Default test: Clifton, Bristol (real relief — the Avon Gorge) by explicit
+    # bbox, so the test is deterministic. Pass an area name to override.
+    area: str | None = " ".join(sys.argv[1:]) or None
+    bbox_arg = None if area else (51.452, -2.633, 51.468, -2.605)
     out = "test_combined.3dm"
-    stats = build_combined(area, out)
+
+    tracemalloc.start()
+    stats = build_combined(area, out, bbox_arg)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
     print(f"Area            : {stats['display_name']}")
     print(f"EPSG            : {stats['epsg']}")
     print(f"Total objects   : {stats['objects']}  "
           f"(3D={stats['objects_3d']}, Linework={stats['objects_linework']})")
     print(f"Total layers    : {stats['layers']}")
-    print(f"Groups present  : 3D={stats['has_3d_group']}  Linework={stats['has_linework_group']}")
+    print(f"Groups present  : 3D={stats['has_3d_group']}  "
+          f"Linework={stats['has_linework_group']}  TERRAIN={stats['has_terrain_group']}")
     print(f"Buildings       : {stats['buildings']}  Roads: {stats['roads']}  Water: {stats['water']}")
+    print(f"Terrain         : {stats['terrain']}")
+    print(f"Datum           : {stats['datum']}")
+    print(f"tracemalloc peak: {peak / 1048576:.1f} MB")
 
-    # Spatial-invariant checks across ALL objects: every building extrudes
-    # upward (Z-min == 0, Z-max > 0) and all linework lies flat at Z = 0.
+    # Spatial-invariant checks across ALL objects: with terrain, building
+    # bases sit at real ground heights (and the first bases match the lowest
+    # sampled terrain under their footprints exactly); linework lies flat at
+    # the datum; the terrain mesh and contours are present.
     model = rhino3dm.File3dm.Read(out)
     layers = {lay.Index: lay for lay in model.Layers}
     bldg_idx = next((i for i, l in layers.items() if l.Name == "BUILDINGS_extruded"), None)
-    bldg_zmax_min = float("inf")   # smallest top across all buildings
-    bldg_zmin_min = float("inf")   # lowest point across all buildings
-    lin_zmax = float("-inf")
-    lin_zmin = float("inf")
+    surf_idx = next((i for i, l in layers.items() if l.Name == "surface"), None)
+    cont_idx = next((i for i, l in layers.items() if l.Name == "contours"), None)
+    bases: list[float] = []
+    lin_zmax, lin_zmin = float("-inf"), float("inf")
+    meshes = contours = 0
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
         bb = obj.Geometry.GetBoundingBox()
         if li == bldg_idx:
-            bldg_zmax_min = min(bldg_zmax_min, bb.Max.Z)
-            bldg_zmin_min = min(bldg_zmin_min, bb.Min.Z)
+            bases.append(bb.Min.Z)
+        elif li == surf_idx:
+            meshes += 1
+        elif li == cont_idx:
+            contours += 1
         elif li in layers and layers[li].Name.endswith(("_PL", "_LN", "_PT")):
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
-    print(f"Buildings  : lowest base Z={bldg_zmin_min}  smallest top Z={bldg_zmax_min}  "
-          f"(expect base 0, top > 0)")
-    print(f"Linework   : Z range [{lin_zmin}, {lin_zmax}]  (expect [0, 0])")
+    print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
+    print(f"Building bases  : min={min(bases):.1f}  max={max(bases):.1f}  "
+          f"distinct={len({round(b, 2) for b in bases})}  (expect stepping, not all 0)")
+    expected = stats["base_z_samples"]
+    # NOTE: buildings are added in pop() order; compare the LAST n building
+    # objects' recorded order isn't stable across read-back, so check the
+    # recorded sample bases all appear among the read-back bases instead.
+    base_set = {round(b, 2) for b in bases}
+    matched = sum(1 for b in expected if round(b, 2) in base_set)
+    print(f"Recorded bases  : {matched}/{len(expected)} found in read-back")
+    print(f"Linework Z      : [{lin_zmin}, {lin_zmax}]  (expect flat at datum "
+          f"{stats['datum']})")
