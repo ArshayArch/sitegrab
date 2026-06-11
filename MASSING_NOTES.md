@@ -71,3 +71,12 @@ building's (real or estimated) height; eaves sit below it. Everything else remai
 flat-topped extrusion. Houses go on `3D/BUILDINGS_houses`, the rest on
 `3D/BUILDINGS_blocks` — the layer split makes the residential grain selectable, and the
 old `BUILDINGS_extruded` name would have been a lie for roofed meshes.
+
+## 4. Ground-surface rule (kerb scale)
+
+The street section is read by tiny, consistent offsets, all relative to the local
+terrain height (or the flat datum with terrain off): **carriageway −50mm** (the road is
+the lowest surface), **pavement/footway +120mm** (a kerb), **parks/grass +50mm** as
+filled green meshes so green space reads instantly, **water** at its existing level
+slightly below the bank. These are 3D-reading aids only; the flat `Linework/` layers
+stay untouched for CAD use.

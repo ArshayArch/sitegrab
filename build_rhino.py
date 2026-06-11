@@ -19,7 +19,10 @@ import rhino3dm
 from fetch_core import fetch_overpass, get_transformer, resolve_area
 
 LEVEL_HEIGHT_M = 3.3
-ROAD_Z = 0.5  # raise roads slightly above ground plane
+# Carriageways sit a hair BELOW the ground datum: the road is the lowest
+# surface in the street section, with pavements a kerb (~120mm) above it —
+# see the surface-differentiation constants in build_combined.
+ROAD_Z = -0.05
 
 # ---------------------------------------------------------------------------
 # Building heights: HONESTY DISCIPLINE (see MASSING_NOTES.md).

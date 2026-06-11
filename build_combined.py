@@ -6,8 +6,10 @@ linework and (by default) the real topography into one spatially aligned model:
 - ``TERRAIN/`` -> ``surface`` (DEM mesh) + ``contours`` (true-elevation polylines).
 - ``3D/``      -> buildings draped onto the terrain (each base sits at the
   LOWEST ground height under its footprint — buildings stay plumb, cutting
-  into the hill on the high side; see TOPO_RATIONALE.md), main roads draped
-  per-vertex, water, site boundary.
+  into the hill on the high side; see TOPO_RATIONALE.md): pitched-roof
+  houses on ``BUILDINGS_houses``, flat blocks on ``BUILDINGS_blocks``.
+  Main roads draped per-vertex a hair below ground, footways a kerb above
+  on ``PAVEMENTS``, filled green surfaces on ``GREENS``, water, boundary.
 - ``Linework/`` -> the granular DXF-style layers, kept FLAT as a clean plan
   drawing at a datum just under the terrain (the site's lowest elevation,
   floored to a whole metre) — the deliberate scope decision in
@@ -58,6 +60,98 @@ LINEWORK_COLORS: dict[str, tuple[int, int, int]] = {
 # With terrain OFF everything sits on the Z=0 plane (original behaviour).
 # With terrain ON the flat datum becomes the site's lowest elevation instead.
 FLAT_GROUND_Z = 0.0
+
+# ---------------------------------------------------------------------------
+# Surface differentiation (kerb-scale, subtle). All offsets are relative to
+# the local ground (terrain sample, or the flat datum with terrain off):
+# carriageways sit a hair below ground (rh.ROAD_Z = -0.05), pavements ride a
+# kerb above, greens get their own faintly-raised filled surface. The flat
+# Linework/ layers are untouched — this is about the 3D reading only.
+# ---------------------------------------------------------------------------
+PAVEMENT_RAISE_M = 0.12  # kerb height
+GREEN_RAISE_M = 0.05
+
+_PAVEMENT_HIGHWAYS = {"footway", "path", "pedestrian", "cycleway", "steps"}
+_GREEN_LEISURE = {"park", "garden", "pitch", "playground", "recreation_ground",
+                  "common", "village_green", "dog_park", "golf_course"}
+_GREEN_LANDUSE = {"grass", "meadow", "village_green", "recreation_ground",
+                  "cemetery", "allotments"}
+_GREEN_NATURAL = {"grassland", "heath"}
+
+# Green polygons are decimated to this many boundary vertices before
+# triangulation — keeps the O(n^2) ear clipper cheap; visually lossless at
+# site scale for organic park outlines.
+_GREEN_MAX_VERTS = 150
+
+
+def _is_green(tags: dict[str, str]) -> bool:
+    return (tags.get("leisure") in _GREEN_LEISURE
+            or tags.get("landuse") in _GREEN_LANDUSE
+            or tags.get("natural") in _GREEN_NATURAL)
+
+
+def _earclip(pts: list[tuple[float, float]]) -> list[tuple[int, int, int]]:
+    """Triangulate a simple polygon by ear clipping -> index triples.
+
+    Handles the concave outlines parks actually have. If clipping stalls
+    (self-intersecting input), the remainder is fanned — visually acceptable
+    for the rare degenerate way.
+    """
+    n = len(pts)
+    if n < 3:
+        return []
+
+    def cross(o: int, a: int, b: int) -> float:
+        return ((pts[a][0] - pts[o][0]) * (pts[b][1] - pts[o][1])
+                - (pts[a][1] - pts[o][1]) * (pts[b][0] - pts[o][0]))
+
+    signed = sum(x1 * y2 - x2 * y1
+                 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))
+    idx = list(range(n)) if signed >= 0 else list(range(n - 1, -1, -1))
+    tris: list[tuple[int, int, int]] = []
+    while len(idx) > 3:
+        for k in range(len(idx)):
+            a, b, c = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
+            if cross(a, b, c) <= 0:  # reflex corner, not an ear
+                continue
+            if any(cross(a, b, p) > 0 and cross(b, c, p) > 0 and cross(c, a, p) > 0
+                   for p in idx if p not in (a, b, c)):
+                continue
+            tris.append((a, b, c))
+            del idx[k]
+            break
+        else:  # no ear found: fan the rest and stop
+            tris.extend((idx[0], idx[k], idx[k + 1]) for k in range(1, len(idx) - 1))
+            return tris
+    tris.append((idx[0], idx[1], idx[2]))
+    return tris
+
+
+def _green_mesh(
+    pts: list[tuple[float, float]],
+    geom: list[dict[str, float]],
+    ground: Any,
+) -> rhino3dm.Mesh | None:
+    """Filled green surface: the polygon triangulated, each boundary vertex
+    draped at ``ground(p) + GREEN_RAISE_M``. ``pts``/``geom`` are the open
+    ring (no duplicated closing point). Triangle interiors stay planar
+    between boundary vertices — fine at kerb scale on park-sized polygons.
+    """
+    step = math.ceil(len(pts) / _GREEN_MAX_VERTS)
+    if step > 1:
+        pts, geom = pts[::step], geom[::step]
+    if len(pts) < 3:
+        return None
+    tris = _earclip(pts)
+    if not tris:
+        return None
+    mesh = rhino3dm.Mesh()
+    for (x, y), p in zip(pts, geom):
+        mesh.Vertices.Add(x, y, ground(p) + GREEN_RAISE_M)
+    for a, b, c in tris:
+        mesh.Faces.AddFace(a, b, c)
+    mesh.Normals.ComputeNormals()
+    return mesh
 
 
 def _ensure_ccw(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -126,8 +220,14 @@ def _build_3d_group(
     """
     parent = _add_parent(model, "3D", (200, 200, 200))
     cache: dict[str, int] = {}
-    for nm, rgb in rh._LAYERS.items():  # pre-create the five massing layers
+    for nm, rgb in rh._LAYERS.items():  # pre-create the massing layers
         _add_child(model, nm, parent, rgb, cache)
+    # Ground-surface layers, filled during the later detailed pass (the lean
+    # dataset has no footways or green space).
+    surface_layers = {
+        "PAVEMENTS": _add_child(model, "PAVEMENTS", parent, (205, 200, 190), cache),
+        "GREENS": _add_child(model, "GREENS", parent, (110, 185, 100), cache),
+    }
 
     buildings = houses = roads = water = 0
     base_z_samples: list[float] = []  # first few building bases, for verification
@@ -213,6 +313,7 @@ def _build_3d_group(
         "roads": roads,
         "water": water,
         "base_z_samples": base_z_samples,
+        "surface_layers": surface_layers,
     }
 
 
@@ -221,6 +322,8 @@ def _build_linework_group(
     data: dict[str, Any],
     transformer: Any,
     datum: float = FLAT_GROUND_Z,
+    grid: ElevationGrid | None = None,
+    surface_layers: dict[str, int] | None = None,
 ) -> dict[str, int]:
     """Populate the ``Linework/`` group from the DETAILED dataset, flat at ``datum``.
 
@@ -229,6 +332,11 @@ def _build_linework_group(
     datum is the site's lowest elevation; otherwise Z=0. Layer naming reuses
     ``build_dxf.classify`` exactly; geometry is drawn as rhino3dm points
     (nodes) and polyline curves (ways) on that plane.
+
+    The same pass also feeds the 3D surface differentiation (the detailed
+    dataset is the only one with footways and green space): footways become
+    draped polylines a kerb above ground on ``3D/PAVEMENTS``, and closed
+    park/grass outlines become filled draped meshes on ``3D/GREENS``.
     """
     parent = _add_parent(model, "Linework", (180, 180, 180))
     cache: dict[str, int] = {}
@@ -238,7 +346,10 @@ def _build_linework_group(
         rgb = LINEWORK_COLORS.get(category, (200, 200, 200))
         return _add_child(model, layer_name, parent, rgb, cache)
 
-    objects = 0
+    def ground(p: dict[str, float]) -> float:
+        return grid.sample(p["lon"], p["lat"]) if grid is not None else datum
+
+    objects = pavements = greens = 0
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
     elements = data.get("elements", [])
@@ -262,19 +373,35 @@ def _build_linework_group(
             geom = el.get("geometry")
             if not geom or len(geom) < 2:
                 continue
-            result = dxf.classify(tags, is_point=False)
-            if result is None:
-                continue
-            layer, closed = result
             pts = [transformer.transform(p["lon"], p["lat"]) for p in geom]
-            curve = (rh._closed_curve(pts, datum) if closed
-                     else rh._open_curve(pts, datum))
-            if curve is None:
-                continue
-            model.Objects.AddCurve(curve, _attrs(resolve(layer)))
-            objects += 1
 
-    return {"objects": objects, "layers": len(cache)}
+            result = dxf.classify(tags, is_point=False)
+            if result is not None:
+                layer, closed = result
+                curve = (rh._closed_curve(pts, datum) if closed
+                         else rh._open_curve(pts, datum))
+                if curve is not None:
+                    model.Objects.AddCurve(curve, _attrs(resolve(layer)))
+                    objects += 1
+
+            if surface_layers is None:
+                continue
+            if tags.get("highway") in _PAVEMENT_HIGHWAYS:
+                pl = rhino3dm.Polyline()
+                for (x, y), p in zip(pts, geom):
+                    pl.Add(x, y, ground(p) + PAVEMENT_RAISE_M)
+                if pl.Count >= 2:
+                    model.Objects.AddCurve(
+                        pl.ToPolylineCurve(), _attrs(surface_layers["PAVEMENTS"]))
+                    pavements += 1
+            elif _is_green(tags) and len(geom) >= 4 and geom[0] == geom[-1]:
+                mesh = _green_mesh(pts[:-1], geom[:-1], ground)
+                if mesh is not None:
+                    model.Objects.AddMesh(mesh, _attrs(surface_layers["GREENS"]))
+                    greens += 1
+
+    return {"objects": objects, "layers": len(cache),
+            "pavements": pavements, "greens": greens}
 
 
 def build_combined(
@@ -312,16 +439,19 @@ def build_combined(
 
     # Process the two OSM datasets sequentially so they never coexist in
     # memory: fetch the lean set, build the 3D massing (draped via the grid),
-    # then drop both *before* fetching the much larger detailed set. All
-    # queries share the same bbox and transformer, so the groups stay aligned.
+    # then drop it *before* fetching the much larger detailed set. The grid
+    # itself is tiny (<=180x180 float32) and stays alive for draping the
+    # pavement/green surfaces in the detailed pass. All queries share the
+    # same bbox and transformer, so the groups stay aligned.
     lean = fetch_overpass(rh._QUERY_TEMPLATE.format(bbox=bbox))
     g3d = _build_3d_group(model, lean, transformer, corners_ll, grid, datum)
-    del lean, grid
+    del lean
     gc.collect()
 
     detailed = fetch_overpass(dxf._QUERY_TEMPLATE.format(bbox=bbox))
-    glin = _build_linework_group(model, detailed, transformer, datum)
-    del detailed
+    glin = _build_linework_group(model, detailed, transformer, datum,
+                                 grid, g3d["surface_layers"])
+    del detailed, grid
     gc.collect()
 
     model.Write(out_path, 0)
@@ -346,6 +476,8 @@ def build_combined(
         "houses": g3d["houses"],
         "roads": g3d["roads"],
         "water": g3d["water"],
+        "pavements": glin["pavements"],
+        "greens": glin["greens"],
         "base_z_samples": g3d["base_z_samples"],
         "datum": datum,
         "has_3d_group": has_3d,
@@ -379,6 +511,7 @@ if __name__ == "__main__":
           f"Linework={stats['has_linework_group']}  TERRAIN={stats['has_terrain_group']}")
     print(f"Buildings       : {stats['buildings']}  (houses with pitched roofs: "
           f"{stats['houses']})  Roads: {stats['roads']}  Water: {stats['water']}")
+    print(f"Surfaces        : pavements={stats['pavements']}  greens={stats['greens']}")
     print(f"Terrain         : {stats['terrain']}")
     print(f"Datum           : {stats['datum']}")
     print(f"tracemalloc peak: {peak / 1048576:.1f} MB")
@@ -394,9 +527,11 @@ if __name__ == "__main__":
     house_idx = next((i for i, l in layers.items() if l.Name == "BUILDINGS_houses"), None)
     surf_idx = next((i for i, l in layers.items() if l.Name == "surface"), None)
     cont_idx = next((i for i, l in layers.items() if l.Name == "contours"), None)
+    pav_idx = next((i for i, l in layers.items() if l.Name == "PAVEMENTS"), None)
+    grn_idx = next((i for i, l in layers.items() if l.Name == "GREENS"), None)
     bases: list[float] = []
     lin_zmax, lin_zmin = float("-inf"), float("inf")
-    meshes = contours = house_objs = 0
+    meshes = contours = house_objs = pavs = grns = 0
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
         bb = obj.Geometry.GetBoundingBox()
@@ -408,11 +543,16 @@ if __name__ == "__main__":
             meshes += 1
         elif li == cont_idx:
             contours += 1
+        elif li == pav_idx:
+            pavs += 1
+        elif li == grn_idx:
+            grns += 1
         elif li in layers and layers[li].Name.endswith(("_PL", "_LN", "_PT")):
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
     print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
     print(f"House meshes    : {house_objs} (read-back, expect == houses above)")
+    print(f"Surfaces        : pavements={pavs}  greens={grns} (read-back)")
     print(f"Building bases  : min={min(bases):.1f}  max={max(bases):.1f}  "
           f"distinct={len({round(b, 2) for b in bases})}  (expect stepping, not all 0)")
     expected = stats["base_z_samples"]
