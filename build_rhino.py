@@ -17,9 +17,103 @@ import rhino3dm
 
 from fetch_core import fetch_overpass, get_transformer, resolve_area
 
-DEFAULT_HEIGHT_M = 30.0
-LEVEL_HEIGHT_M = 3.5
+LEVEL_HEIGHT_M = 3.3
 ROAD_Z = 0.5  # raise roads slightly above ground plane
+
+# ---------------------------------------------------------------------------
+# Building heights: HONESTY DISCIPLINE (see MASSING_NOTES.md).
+# OSM has real heights for only a minority of buildings. A real `height` or
+# `building:levels` tag ALWAYS wins. Everything below is plausible TYPE-DRIVEN
+# ESTIMATION to make the model legible — never surveyed data.
+# ---------------------------------------------------------------------------
+
+# Clearly-residential house types (eligible for pitched roofs).
+_HOUSE_TYPES: set[str] = {"house", "detached", "semidetached_house", "bungalow", "terrace"}
+
+# building= type -> estimated height (m). Storey logic in MASSING_NOTES.md.
+_TYPE_HEIGHTS: dict[str, float] = {
+    "bungalow": 3.8,
+    "house": 5.8, "detached": 6.0, "semidetached_house": 5.8,
+    "terrace": 6.8,
+    "residential": 12.0, "apartments": 16.0, "dormitory": 14.0,
+    "commercial": 18.0, "office": 22.0,
+    "retail": 6.0, "supermarket": 7.0, "kiosk": 3.0,
+    "warehouse": 9.0, "industrial": 9.0, "factory": 9.0, "barn": 7.0,
+    "shed": 2.8, "hut": 2.8, "garage": 2.8, "garages": 2.8, "carport": 2.5,
+    "greenhouse": 3.0, "service": 4.0,
+    "civic": 14.0, "public": 14.0, "government": 16.0,
+    "school": 11.0, "university": 16.0, "hospital": 18.0,
+    "church": 15.0, "chapel": 10.0, "mosque": 16.0, "temple": 14.0,
+    "synagogue": 14.0, "cathedral": 30.0,
+    "hotel": 28.0, "tower": 40.0,
+    "train_station": 12.0, "construction": 8.0,
+}
+
+
+def _footprint_area_m2(pts_xy: list[tuple[float, float]]) -> float:
+    """Shoelace area of the (UTM, metres) footprint polygon."""
+    area = 0.0
+    for (x1, y1), (x2, y2) in zip(pts_xy, pts_xy[1:] + pts_xy[:1]):
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+def _real_height(tags: dict[str, str]) -> float | None:
+    """Real OSM data: `height` -> `building:levels` x 3.3m. None if absent."""
+    if "height" in tags:
+        try:
+            return float(str(tags["height"]).split()[0].replace(",", "."))
+        except (ValueError, IndexError):
+            pass
+    if "building:levels" in tags:
+        try:
+            return float(str(tags["building:levels"]).split()[0]) * LEVEL_HEIGHT_M
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def _estimate_height(btype: str, area: float) -> float:
+    """Type-driven estimate, with footprint-aware fallback and sanity clamps."""
+    h = _TYPE_HEIGHTS.get(btype)
+    if h is None:
+        # Unknown / building=yes: infer scale from the footprint alone.
+        if area < 90:
+            h = 5.5     # house-scale
+        elif area < 300:
+            h = 9.0
+        elif area < 1500:
+            h = 13.0    # mid-rise
+        else:
+            h = 9.0     # big footprint + no tags reads as a shed, not a slab
+    # Footprint sanity: a 40m2 hut is never an office tower; a 5000m2 box is
+    # never a bungalow.
+    if area < 100:
+        h = min(h, 10.0)
+    if area > 3000:
+        h = max(h, 8.0)
+    return h
+
+
+def _jitter(h: float, osm_id: int) -> float:
+    """+/-4% deterministic variation seeded by the OSM way id (stable re-runs)."""
+    frac = ((osm_id * 1103515245 + 12345) % 2**31) / 2**31
+    return h * (0.96 + 0.08 * frac)
+
+
+def building_height(
+    tags: dict[str, str], pts_xy: list[tuple[float, float]], osm_id: int
+) -> tuple[float, bool]:
+    """Building height in metres -> (height, is_estimated).
+
+    Real `height`/`building:levels` data always wins, unjittered. Estimates
+    (and only estimates) get the type/footprint logic plus gentle jitter.
+    """
+    real = _real_height(tags)
+    if real is not None:
+        return real, False
+    area = _footprint_area_m2(pts_xy)
+    return _jitter(_estimate_height(tags.get("building", "yes"), area), osm_id), True
 
 # Lean query: buildings, main roads, water only.
 _QUERY_TEMPLATE = """
@@ -40,21 +134,6 @@ _LAYERS: dict[str, tuple[int, int, int]] = {
     "WATER": (90, 150, 220),
     "SITE_BOUNDARY": (255, 140, 0),
 }
-
-
-def _parse_height(tags: dict[str, str]) -> float:
-    """Building height in metres: OSM ``height`` -> ``building:levels`` -> default."""
-    if "height" in tags:
-        try:
-            return float(str(tags["height"]).split()[0].replace(",", "."))
-        except (ValueError, IndexError):
-            pass
-    if "building:levels" in tags:
-        try:
-            return float(str(tags["building:levels"]).split()[0]) * LEVEL_HEIGHT_M
-        except (ValueError, IndexError):
-            pass
-    return DEFAULT_HEIGHT_M
 
 
 def _closed_curve(pts_xy: list[tuple[float, float]], z: float) -> rhino3dm.PolylineCurve | None:
@@ -133,7 +212,7 @@ def build_rhino(
             curve = _closed_curve(pts, 0.0)
             if curve is None or not curve.IsClosed:
                 continue
-            height = _parse_height(tags)
+            height, _estimated = building_height(tags, pts, el.get("id", 0))
             extrusion = rhino3dm.Extrusion.Create(curve, height, True)
             if extrusion is None:
                 continue

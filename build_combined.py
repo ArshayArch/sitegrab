@@ -153,7 +153,7 @@ def _build_3d_group(
             curve = rh._closed_curve(_ensure_ccw(pts), base)
             if curve is None or not curve.IsClosed:
                 continue
-            height = rh._parse_height(tags)
+            height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
             extrusion = rhino3dm.Extrusion.Create(curve, height, True)
             if extrusion is None:
                 continue
