@@ -3,9 +3,14 @@
 Type the name of an area (e.g. **Dubai Marina**) and SiteGrab generates downloadable
 site-data files for it, built from **live OpenStreetMap data**:
 
-- a **Combined Rhino `.3dm`** — the headline output: the 3D massing and the 2D linework
-  in **one spatially aligned model** (linework flat at Z=0 as the ground plane, buildings
-  extruded upward above it, both in the same UTM grid),
+- a **Combined Rhino `.3dm`** — the headline output: **real topography, 3D massing and 2D
+  linework in one spatially aligned model**. The terrain arrives as a DEM mesh
+  (`TERRAIN/surface`) with auto-interval contour polylines at true elevations
+  (`TERRAIN/contours`); buildings are draped so each base sits at the lowest ground
+  height under its footprint (they step down slopes instead of floating at Z=0); the
+  linework stays flat as a clean plan datum just under the terrain. Terrain can be
+  toggled off in the UI for the original flat model. See `TOPO_RATIONALE.md` for the
+  design decisions.
 - a standalone Rhino **`.3dm`** 3D massing model (lean: buildings, main roads, water), and / or
 - a standalone AutoCAD **`.dxf`** 2D drawing (detailed: a rich, layered basemap).
 
@@ -21,19 +26,25 @@ grid** so it lands in real-world metres.
 ## How it works
 
 ```
-fetch_core.py    geocode (Nominatim) + UTM zone detection + Overpass fetch   (shared)
-build_rhino.py   fetched data -> .3dm   (LEAN feature set, rhino3dm)
-build_dxf.py     fetched data -> .dxf   (DETAILED feature set, ezdxf, fully headless)
-build_combined.py both datasets -> one aligned .3dm (reuses build_rhino + build_dxf logic)
-main.py          FastAPI app: serves the frontend + POST /generate + POST /brief
-static/          the single-page frontend
+fetch_core.py      geocode (Nominatim) + UTM zone detection + Overpass fetch   (shared)
+fetch_elevation.py elevation grid from AWS Terrain Tiles (free, keyless terrarium PNGs)
+build_terrain.py   elevation grid -> terrain mesh + contour polylines (rhino3dm)
+build_rhino.py     fetched data -> .3dm   (LEAN feature set, rhino3dm)
+build_dxf.py       fetched data -> .dxf   (DETAILED feature set, ezdxf, fully headless)
+build_combined.py  all datasets -> one aligned .3dm (terrain + draped massing + linework)
+main.py            FastAPI app: serves the frontend + POST /generate + POST /brief
+static/            the single-page frontend
 ```
 
 1. **Geocode** the area name to a bounding box (Nominatim).
 2. **Detect the UTM zone** from the bbox centre and build a WGS84 → UTM transformer.
-3. **Fetch** the relevant OSM features from Overpass (with mirror failover + backoff).
-4. **Build** the requested file(s), reprojecting every coordinate into local metres.
-5. **Verify** each output by reading it back (object/layer counts) before returning it.
+3. **Fetch elevation** (combined file, unless toggled off): terrarium tiles decoded to a
+   ~10–30m elevation grid, clamped at sea level (the tiles include ocean bathymetry).
+4. **Fetch** the relevant OSM features from Overpass (with mirror failover + backoff).
+5. **Build** the requested file(s), reprojecting every coordinate — terrain samples and
+   OSM features alike — with the **same transformer** into local metres, so all groups
+   align automatically.
+6. **Verify** each output by reading it back (object/layer counts) before returning it.
 
 The 3D model deliberately stays uncluttered (a massing model). The 2D drawing is rich —
 a dense city area like Dubai Marina produces ~90+ granular layers and a few MB of DXF.
@@ -94,19 +105,34 @@ python build_dxf.py "Dubai Marina"
 # 3D: writes test_marina.3dm and reports object/layer counts (5 layers).
 python build_rhino.py "Dubai Marina"
 
-# Combined: writes test_combined.3dm and verifies the aligned model
-# (two layer groups, ~8900 objects for Dubai Marina, buildings Z>0, linework Z=0).
+# Elevation: prints grid size + elevation range for a coastal and a hilly site.
+python fetch_elevation.py
+
+# Terrain: writes test_terrain.3dm (mesh + contours for Clifton, Bristol),
+# verifies contours sit at exact level elevations, reports tracemalloc peak.
+python build_terrain.py
+
+# Combined: with no arguments, builds Clifton, Bristol (real relief) and verifies
+# the full terrain-aware model: TERRAIN group present, building bases stepping
+# with the ground, linework flat at the datum. Pass an area name to override.
+python build_combined.py
 python build_combined.py "Dubai Marina"
 ```
 
 ### Test the HTTP endpoints
 
 ```bash
-# The headline combined file -> one aligned .3dm:
+# The headline combined file -> one aligned .3dm with terrain (default):
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
   -d '{"area":"Dubai Marina","formats":["combined"]}' \
   -o dubai_marina_combined.3dm
+
+# The same without terrain (original flat model):
+curl -X POST http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"area":"Dubai Marina","formats":["combined"],"terrain":false}' \
+  -o dubai_marina_flat.3dm
 
 # Multiple formats -> a ZIP (valid formats: "combined", "rhino", "dxf"):
 curl -X POST http://localhost:8000/generate \
@@ -181,11 +207,15 @@ To remove the cold start later, upgrade to Render's **Starter** plan (~$7/month)
 
 ## Data-source etiquette
 
-SiteGrab relies on the **free public** OpenStreetMap services:
+SiteGrab relies on **free public** data services:
 
-- **Nominatim** (`nominatim.openstreetmap.org`) for geocoding, and
+- **Nominatim** (`nominatim.openstreetmap.org`) for geocoding,
 - the **public Overpass API** (`overpass-api.de`, with `overpass.kumi.systems` as a mirror)
-  for the map data.
+  for the map data, and
+- **AWS Terrain Tiles** (`s3.amazonaws.com/elevation-tiles-prod`) for elevation — an open,
+  keyless dataset on the AWS Open Data Registry (originally Mapzen's terrain tiles,
+  containing 3DEP, SRTM and GMTED2010 content courtesy of the U.S. Geological Survey,
+  ETOPO1 content courtesy of NOAA, and other open DEM sources).
 
 These are fine for **personal and light use**, but their usage policies discourage heavy
 automated public traffic. Please be a good citizen:
