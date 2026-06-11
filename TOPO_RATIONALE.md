@@ -32,8 +32,10 @@ or drainage engineering. That comes later, from a real topographic survey.
   (SRTM-class) over most of the world, ~10m in parts of the US/Europe. So a sample
   grid of roughly **10–30m spacing** captures everything the data actually contains.
   Fetching a 1m-spaced grid would be interpolation theatre — heavier, no truer.
-- **Contours at 1m/2m/5m** depending on relief, like a real site plan. An architect reads
-  contours faster than a shaded mesh; they're also what gets traced into drawings.
+- **Contours at 2m/5m/10m** depending on relief, like a real site plan. An architect reads
+  contours faster than a shaded mesh; they're also what gets traced into drawings. 2m is
+  the floor — SRTM-class vertical noise is several metres, so 1m contours would be
+  speckle, not information (and tiny noise loops are filtered out for the same reason).
 - **Buildings must sit on the ground.** This is the single highest-value item. A terrain
   mesh under floating Z=0 buildings is a gimmick; massing stepping down a hill is the
   thing that makes the model *usable*.
@@ -94,7 +96,12 @@ Built to the concept-stage need identified above, and no further:
    read as objects in the massing model and floating roads through a hillside read as
    broken. The terrain-aware **3D massing roads draped, 2D linework flat at datum** split
    gives each dataset the form it is actually used in.
-6. **Terrain is optional** (UI toggle, default ON for the combined file) — it adds fetch
+6. **Water reads as sea level.** The terrarium tiles include ocean *bathymetry*, which
+   on any coastal site drags waterside ground (and the buildings on it) tens of metres
+   below sea level — found and fixed in testing. The grid is clamped at 0m: water reads
+   as a flat plane at quay level, which is what a site model wants. Known cost: the rare
+   deep below-sea-level land site (Death Valley, Dead Sea shore) reads flat at 0.
+7. **Terrain is optional** (UI toggle, default ON for the combined file) — it adds fetch
    time, and flat-city users (Dubai Marina) lose nothing by turning it off.
 7. **Standalone outputs unchanged:** the lean `.3dm` massing-only and the `.dxf` remain
    flat/fast as before. Terrain ships in the combined file, which is the headline output.

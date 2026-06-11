@@ -28,12 +28,18 @@ from pyproj.enums import TransformDirection
 from fetch_elevation import ElevationGrid
 
 # Contour intervals tried smallest-first; the first giving <= MAX_CONTOURS
-# levels wins, like picking 1m/2m/5m contours on a real site plan.
-_INTERVALS: tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 20.0, 50.0)
+# levels wins, like picking 2m/5m/10m contours on a real site plan. 2m is the
+# deliberate floor: SRTM-class vertical noise is several metres, so 1m
+# contours on near-flat ground are speckle, not information.
+_INTERVALS: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0, 50.0)
 MAX_CONTOURS = 40
 
 # Below this elevation range the site is flat: contours would be DEM noise.
 MIN_RELIEF_M = 1.5
+
+# Closed noise bumps in the DEM produce tiny contour loops; anything shorter
+# than this total length (a couple of grid cells) is dropped as speckle.
+MIN_CONTOUR_LEN_M = 40.0
 
 TERRAIN_COLOR = (146, 116, 91)     # earth brown
 CONTOUR_COLOR = (196, 148, 90)     # lighter sand
@@ -218,6 +224,12 @@ def add_terrain(
         levels = list(np.arange(first, grid.zmax, interval))
         for level in levels:
             for path in _contour_paths(grid, xs, ys, float(level)):
+                length = sum(
+                    ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+                    for (x0, y0), (x1, y1) in zip(path, path[1:])
+                )
+                if length < MIN_CONTOUR_LEN_M:
+                    continue
                 pl = rhino3dm.Polyline()
                 for x, y in path:
                     pl.Add(x, y, float(level))

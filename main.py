@@ -64,6 +64,11 @@ class GenerateRequest(BaseModel):
     formats: list[str] = Field(
         ..., description="Any of 'combined', 'rhino', 'dxf'"
     )
+    terrain: bool = Field(
+        True,
+        description="Include real topography (terrain mesh + contours, draped "
+        "buildings) in the combined file. Ignored for 'rhino'/'dxf'.",
+    )
 
 
 class BriefRequest(BaseModel):
@@ -131,7 +136,7 @@ def generate(req: GenerateRequest):
     try:
         if "combined" in wanted:
             path = os.path.join(tmpdir, f"{slug}_combined.3dm")
-            build_combined(req.area, path, bbox)
+            build_combined(req.area, path, bbox, terrain=req.terrain)
             produced.append((path, f"{slug}_combined.3dm"))
         if "rhino" in wanted:
             path = os.path.join(tmpdir, f"{slug}.3dm")
@@ -147,7 +152,7 @@ def generate(req: GenerateRequest):
         _cleanup(tmpdir)
         raise HTTPException(status_code=422 if bbox else 404, detail=str(ex))
     except RuntimeError as ex:
-        # Overpass unavailable after retries.
+        # Overpass or the elevation tile service unavailable after retries.
         _cleanup(tmpdir)
         raise HTTPException(status_code=503, detail=str(ex))
     except Exception as ex:  # noqa: BLE001

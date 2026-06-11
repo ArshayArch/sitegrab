@@ -46,6 +46,14 @@ MAX_TILES = 16
 # beyond ~180 the mesh gains weight but no real DEM information.
 MAX_GRID = 180
 
+# Terrarium tiles include ocean BATHYMETRY (GEBCO/ETOPO), so any coastal bbox
+# reads tens of metres of seafloor as "ground" — which drags waterside
+# buildings to e.g. -46m. We clamp the grid at sea level: water reads as a
+# flat plane at 0 (≈ quay level), which is what a site model wants. The cost
+# is the rare deep below-sea-level land site (Death Valley, Dead Sea shore),
+# which would read flat at 0 — documented in TOPO_RATIONALE.md.
+SEA_LEVEL_CLAMP_M = 0.0
+
 
 def _lonlat_to_global_px(lon: float, lat: float, z: int) -> tuple[float, float]:
     """WGS84 -> global Web-Mercator pixel coordinates at zoom ``z``."""
@@ -168,9 +176,11 @@ def fetch_elevation_grid(s: float, w: float, n: float, e: float) -> ElevationGri
     ]
     del mosaic
 
-    # Downsample to the mesh grid cap (stride sampling keeps true DEM values).
+    # Downsample to the mesh grid cap (stride sampling keeps true DEM values),
+    # then clamp out bathymetry (see SEA_LEVEL_CLAMP_M).
     step = max(1, math.ceil(max(window.shape) / MAX_GRID))
     window = np.ascontiguousarray(window[::step, ::step])
+    np.maximum(window, SEA_LEVEL_CLAMP_M, out=window)
 
     rows = np.arange(py0, py1, step, dtype=np.float64) + 0.5  # pixel centres
     cols = np.arange(px0, px1, step, dtype=np.float64) + 0.5

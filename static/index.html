@@ -199,6 +199,22 @@
   }
   .toggle.active .rec { background: var(--card); }
 
+  /* ---- terrain option ---- */
+  .terrain-opt {
+    display: flex; align-items: flex-start; gap: 10px; margin-top: 10px;
+    padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--paper); cursor: pointer; user-select: none;
+    transition: opacity .15s, border-color .15s;
+  }
+  .terrain-opt:hover { border-color: var(--line-strong); }
+  .terrain-opt input {
+    accent-color: var(--accent); width: 15px; height: 15px; margin: 3px 0 0; flex: none; cursor: pointer;
+  }
+  .terrain-opt .t-main { font-weight: 600; font-size: 0.9rem; color: var(--ink); }
+  .terrain-opt .t-note { display: block; font-size: 0.78rem; color: var(--muted); }
+  .terrain-opt.disabled { opacity: .45; cursor: default; }
+  .terrain-opt.disabled input { cursor: default; }
+
   /* ---- generate button ---- */
   button.generate {
     width: 100%; margin-top: 20px; padding: 15px;
@@ -362,6 +378,15 @@
       </div>
     </div>
 
+    <label class="terrain-opt" id="terrainOpt">
+      <input type="checkbox" id="terrainChk" checked />
+      <span>
+        <span class="t-main">Include terrain</span>
+        <span class="t-note">Real topography in the combined file: ground mesh, contour lines,
+        and buildings seated on the slope. Adds a little fetch time — untick for a flat model.</span>
+      </span>
+    </label>
+
     <button class="generate" id="generate">Generate Site Data</button>
     <div class="status" id="status"></div>
   </div>
@@ -407,14 +432,16 @@
   "use strict";
 
   const FORMAT_META = {
-    combined: { label: "Combined Rhino File", ext: "3DM", desc: "3D massing + 2D linework, aligned" },
+    combined: { label: "Combined Rhino File", ext: "3DM", desc: "3D massing + 2D linework + terrain, aligned" },
     rhino:    { label: "3D Massing",          ext: "3DM", desc: "lean massing model" },
     dxf:      { label: "2D Linework",          ext: "DXF", desc: "detailed 2D basemap" },
   };
   const PLACEHOLDERS = ["Shibuya, Tokyo", "Marais, Paris", "Brera, Milan", "Hackney Wick, London", "Downtown Brooklyn"];
   const LOADING_MSGS = [
     "Pulling OpenStreetMap data…",
-    "Building 3D massing…",
+    "Fetching elevation tiles…",
+    "Building the terrain surface…",
+    "Seating buildings on the ground…",
     "Laying out 2D linework…",
     "Aligning and writing Rhino file…",
     "Almost there — large areas take a moment…",
@@ -598,6 +625,7 @@
       cb.checked = !cb.checked;
       tog.classList.toggle("active", cb.checked);
       tog.setAttribute("aria-checked", cb.checked ? "true" : "false");
+      updateTerrainOpt();
     };
     tog.addEventListener("click", flip);
     tog.addEventListener("keydown", (e) => {
@@ -609,6 +637,15 @@
       .filter((t) => t.querySelector("input").checked)
       .map((t) => t.dataset.fmt);
   }
+
+  // ---- terrain option (applies to the combined file only) ----
+  const terrainChk = $("terrainChk"), terrainOpt = $("terrainOpt");
+  function updateTerrainOpt() {
+    const relevant = selectedFormats().includes("combined");
+    terrainOpt.classList.toggle("disabled", !relevant);
+    terrainChk.disabled = !relevant;
+  }
+  updateTerrainOpt();
 
   // ---- status helpers ----
   let loadTimer = null;
@@ -683,9 +720,10 @@
     let okCount = 0;
 
     // Payload shared by every format request: a drawn bbox skips geocoding.
+    // The terrain flag only affects the combined build; harmless elsewhere.
     const payloadBase = source.kind === "bbox"
-      ? { bbox: source.bbox }
-      : { area: source.area };
+      ? { bbox: source.bbox, terrain: terrainChk.checked }
+      : { area: source.area, terrain: terrainChk.checked };
     const fallbackBase = source.kind === "bbox" ? "site" : source.area;
 
     // Run sequentially to stay polite to the public OSM servers.
