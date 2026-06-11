@@ -11,6 +11,7 @@ metres from the origin). That is correct and intentional; it is NOT recentred.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import rhino3dm
@@ -115,6 +116,126 @@ def building_height(
     area = _footprint_area_m2(pts_xy)
     return _jitter(_estimate_height(tags.get("building", "yes"), area), osm_id), True
 
+
+# ---------------------------------------------------------------------------
+# Pitched roofs: clearly-residential houses ONLY (see MASSING_NOTES.md §3).
+# A cheap generalised hip — ridge along the footprint's principal axis, each
+# eaves edge roofed to its projection on the ridge. No per-building roof
+# analysis; everything that isn't a house stays a flat-topped extrusion.
+# ---------------------------------------------------------------------------
+
+ROOF_PITCH_DEG = 30.0
+ROOF_MIN_RISE_M = 1.2
+ROOF_MAX_RISE_M = 4.0
+# Footprint window for roofing: under ~30m2 is an outbuilding; over ~400m2 a
+# "terrace"-tagged way is a whole row and one mega-gable would be absurd.
+HOUSE_ROOF_MIN_AREA = 30.0
+HOUSE_ROOF_MAX_AREA = 400.0
+
+
+def is_house(tags: dict[str, str], area_m2: float) -> bool:
+    """True for a clearly-residential house with a house-sized footprint."""
+    return (
+        tags.get("building") in _HOUSE_TYPES
+        and HOUSE_ROOF_MIN_AREA <= area_m2 <= HOUSE_ROOF_MAX_AREA
+    )
+
+
+def _principal_obb(
+    pts: list[tuple[float, float]],
+) -> tuple[tuple[float, float], tuple[float, float], float, float] | None:
+    """Minimum-area oriented bounding box, tested over the edge directions.
+
+    Returns (centre, major-axis unit vector, half_length, half_width), with
+    the major axis always the longer dimension. None for degenerate input.
+    """
+    best = None
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        ex, ey = x2 - x1, y2 - y1
+        d = math.hypot(ex, ey)
+        if d < 1e-9:
+            continue
+        ux, uy = ex / d, ey / d
+        us = [px * ux + py * uy for px, py in pts]
+        vs = [py * ux - px * uy for px, py in pts]
+        u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+        a = (u1 - u0) * (v1 - v0)
+        if best is None or a < best[0]:
+            best = (a, ux, uy, u0, u1, v0, v1)
+    if best is None:
+        return None
+    _, ux, uy, u0, u1, v0, v1 = best
+    if (u1 - u0) < (v1 - v0):
+        # Rotate the frame 90 degrees so u is the long axis: u' = v, v' = -u.
+        ux, uy = -uy, ux
+        u0, u1, v0, v1 = v0, v1, -u1, -u0
+    cu, cv = (u0 + u1) / 2, (v0 + v1) / 2
+    centre = (cu * ux - cv * uy, cu * uy + cv * ux)
+    return centre, (ux, uy), (u1 - u0) / 2, (v1 - v0) / 2
+
+
+def house_mesh(
+    pts_xy: list[tuple[float, float]], base: float, height: float
+) -> rhino3dm.Mesh | None:
+    """Hipped-roof house mesh, or None (caller falls back to a flat extrusion).
+
+    Walls rise from ``base`` to eaves; each eaves edge is roofed to its
+    projection on a ridge along the footprint's principal axis (square plans
+    collapse to a pyramid). The ridge tops out at ``base + height``, so a
+    real OSM ``height`` keeps meaning height-to-ridge. The underside is left
+    open — it sits in/on the ground and is never seen.
+    """
+    pts = list(pts_xy)
+    if len(pts) >= 2 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return None
+    # CCW winding so the wall faces point outward.
+    signed2 = sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))
+    if signed2 < 0:
+        pts = pts[::-1]
+    obb = _principal_obb(pts)
+    if obb is None:
+        return None
+    (cx, cy), (ux, uy), half_len, half_wid = obb
+    if half_wid < 0.8:  # sliver footprint: a flat top reads better
+        return None
+    rise = math.tan(math.radians(ROOF_PITCH_DEG)) * half_wid
+    rise = min(max(rise, ROOF_MIN_RISE_M), ROOF_MAX_RISE_M)
+    rise = min(rise, height - 2.2)  # keep at least a storey of wall
+    if rise < 0.5:
+        return None
+    eaves_z = base + height - rise
+    ridge_z = base + height
+    half_ridge = max(half_len - half_wid, 0.0)  # 45-degree hip ends
+    rx0, ry0 = cx - ux * half_ridge, cy - uy * half_ridge
+
+    mesh = rhino3dm.Mesh()
+    n = len(pts)
+    for x, y in pts:
+        mesh.Vertices.Add(x, y, base)
+    for x, y in pts:
+        mesh.Vertices.Add(x, y, eaves_z)
+    ridge_pts: list[tuple[float, float]] = []
+    for x, y in pts:
+        t = (x - rx0) * ux + (y - ry0) * uy
+        t = min(max(t, 0.0), 2 * half_ridge)
+        ridge_pts.append((rx0 + ux * t, ry0 + uy * t))
+        mesh.Vertices.Add(ridge_pts[-1][0], ridge_pts[-1][1], ridge_z)
+    for i in range(n):
+        j = (i + 1) % n
+        mesh.Faces.AddFace(i, j, n + j, n + i)  # wall quad
+        ri, rj = ridge_pts[i], ridge_pts[j]
+        if abs(ri[0] - rj[0]) < 1e-9 and abs(ri[1] - rj[1]) < 1e-9:
+            mesh.Faces.AddFace(n + i, n + j, 2 * n + j)  # roof triangle
+        else:
+            mesh.Faces.AddFace(n + i, n + j, 2 * n + j, 2 * n + i)  # roof quad
+    mesh.Normals.ComputeNormals()
+    return mesh
+
 # Lean query: buildings, main roads, water only.
 _QUERY_TEMPLATE = """
 [out:json][timeout:180];
@@ -127,8 +248,11 @@ _QUERY_TEMPLATE = """
 out geom;
 """
 
+# Houses (pitched meshes) and blocks (flat extrusions) get separate layers so
+# the residential grain is selectable on its own.
 _LAYERS: dict[str, tuple[int, int, int]] = {
-    "BUILDINGS_extruded": (150, 150, 150),
+    "BUILDINGS_houses": (190, 125, 95),
+    "BUILDINGS_blocks": (150, 150, 150),
     "ROADS_primary": (60, 60, 60),
     "ROADS_secondary": (120, 120, 120),
     "WATER": (90, 150, 220),
@@ -209,15 +333,21 @@ def build_rhino(
         pts = [transformer.transform(p["lon"], p["lat"]) for p in geom]
 
         if "building" in tags:
+            height, _estimated = building_height(tags, pts, el.get("id", 0))
+            if is_house(tags, _footprint_area_m2(pts)):
+                mesh = house_mesh(pts, 0.0, height)
+                if mesh is not None:
+                    model.Objects.AddMesh(mesh, attrs("BUILDINGS_houses"))
+                    buildings += 1
+                    continue
             curve = _closed_curve(pts, 0.0)
             if curve is None or not curve.IsClosed:
                 continue
-            height, _estimated = building_height(tags, pts, el.get("id", 0))
             extrusion = rhino3dm.Extrusion.Create(curve, height, True)
             if extrusion is None:
                 continue
             # Profile lies in the XY plane, so positive height extrudes +Z (upward).
-            model.Objects.AddExtrusion(extrusion, attrs("BUILDINGS_extruded"))
+            model.Objects.AddExtrusion(extrusion, attrs("BUILDINGS_blocks"))
             buildings += 1
 
         elif "highway" in tags:

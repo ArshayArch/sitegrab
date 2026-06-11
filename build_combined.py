@@ -129,7 +129,7 @@ def _build_3d_group(
     for nm, rgb in rh._LAYERS.items():  # pre-create the five massing layers
         _add_child(model, nm, parent, rgb, cache)
 
-    buildings = roads = water = 0
+    buildings = houses = roads = water = 0
     base_z_samples: list[float] = []  # first few building bases, for verification
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
@@ -150,16 +150,25 @@ def _build_3d_group(
                 if grid is not None
                 else datum
             )
+            height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
+            if rh.is_house(tags, rh._footprint_area_m2(pts)):
+                mesh = rh.house_mesh(pts, base, height)
+                if mesh is not None:
+                    model.Objects.AddMesh(mesh, _attrs(cache["BUILDINGS_houses"]))
+                    if len(base_z_samples) < 10:
+                        base_z_samples.append(base)
+                    buildings += 1
+                    houses += 1
+                    continue
             curve = rh._closed_curve(_ensure_ccw(pts), base)
             if curve is None or not curve.IsClosed:
                 continue
-            height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
             extrusion = rhino3dm.Extrusion.Create(curve, height, True)
             if extrusion is None:
                 continue
             # Profile lies in a horizontal plane, so positive height extrudes
             # +Z (upward) from the base level.
-            model.Objects.AddExtrusion(extrusion, _attrs(cache["BUILDINGS_extruded"]))
+            model.Objects.AddExtrusion(extrusion, _attrs(cache["BUILDINGS_blocks"]))
             if len(base_z_samples) < 10:
                 base_z_samples.append(base)
             buildings += 1
@@ -200,6 +209,7 @@ def _build_3d_group(
     return {
         "objects": total,
         "buildings": buildings,
+        "houses": houses,
         "roads": roads,
         "water": water,
         "base_z_samples": base_z_samples,
@@ -333,6 +343,7 @@ def build_combined(
         "objects_3d": g3d["objects"],
         "objects_linework": glin["objects"],
         "buildings": g3d["buildings"],
+        "houses": g3d["houses"],
         "roads": g3d["roads"],
         "water": g3d["water"],
         "base_z_samples": g3d["base_z_samples"],
@@ -366,7 +377,8 @@ if __name__ == "__main__":
     print(f"Total layers    : {stats['layers']}")
     print(f"Groups present  : 3D={stats['has_3d_group']}  "
           f"Linework={stats['has_linework_group']}  TERRAIN={stats['has_terrain_group']}")
-    print(f"Buildings       : {stats['buildings']}  Roads: {stats['roads']}  Water: {stats['water']}")
+    print(f"Buildings       : {stats['buildings']}  (houses with pitched roofs: "
+          f"{stats['houses']})  Roads: {stats['roads']}  Water: {stats['water']}")
     print(f"Terrain         : {stats['terrain']}")
     print(f"Datum           : {stats['datum']}")
     print(f"tracemalloc peak: {peak / 1048576:.1f} MB")
@@ -377,17 +389,21 @@ if __name__ == "__main__":
     # the datum; the terrain mesh and contours are present.
     model = rhino3dm.File3dm.Read(out)
     layers = {lay.Index: lay for lay in model.Layers}
-    bldg_idx = next((i for i, l in layers.items() if l.Name == "BUILDINGS_extruded"), None)
+    bldg_idx = {i for i, l in layers.items()
+                if l.Name in ("BUILDINGS_houses", "BUILDINGS_blocks")}
+    house_idx = next((i for i, l in layers.items() if l.Name == "BUILDINGS_houses"), None)
     surf_idx = next((i for i, l in layers.items() if l.Name == "surface"), None)
     cont_idx = next((i for i, l in layers.items() if l.Name == "contours"), None)
     bases: list[float] = []
     lin_zmax, lin_zmin = float("-inf"), float("inf")
-    meshes = contours = 0
+    meshes = contours = house_objs = 0
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
         bb = obj.Geometry.GetBoundingBox()
-        if li == bldg_idx:
+        if li in bldg_idx:
             bases.append(bb.Min.Z)
+            if li == house_idx:
+                house_objs += 1
         elif li == surf_idx:
             meshes += 1
         elif li == cont_idx:
@@ -396,6 +412,7 @@ if __name__ == "__main__":
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
     print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
+    print(f"House meshes    : {house_objs} (read-back, expect == houses above)")
     print(f"Building bases  : min={min(bases):.1f}  max={max(bases):.1f}  "
           f"distinct={len({round(b, 2) for b in bases})}  (expect stepping, not all 0)")
     expected = stats["base_z_samples"]
