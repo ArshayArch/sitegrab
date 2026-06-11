@@ -70,6 +70,10 @@ FLAT_GROUND_Z = 0.0
 # ---------------------------------------------------------------------------
 PAVEMENT_RAISE_M = 0.12  # kerb height
 GREEN_RAISE_M = 0.05
+# Pitches/playgrounds/gardens usually sit INSIDE a park polygon; a slightly
+# higher offset keeps the nested surface from z-fighting its parent.
+GREEN_NESTED_RAISE_M = 0.08
+_GREEN_NESTED = {"pitch", "playground", "garden", "dog_park"}
 
 _PAVEMENT_HIGHWAYS = {"footway", "path", "pedestrian", "cycleway", "steps"}
 _GREEN_LEISURE = {"park", "garden", "pitch", "playground", "recreation_ground",
@@ -131,11 +135,12 @@ def _green_mesh(
     pts: list[tuple[float, float]],
     geom: list[dict[str, float]],
     ground: Any,
+    raise_m: float = GREEN_RAISE_M,
 ) -> rhino3dm.Mesh | None:
     """Filled green surface: the polygon triangulated, each boundary vertex
-    draped at ``ground(p) + GREEN_RAISE_M``. ``pts``/``geom`` are the open
-    ring (no duplicated closing point). Triangle interiors stay planar
-    between boundary vertices — fine at kerb scale on park-sized polygons.
+    draped at ``ground(p) + raise_m``. ``pts``/``geom`` are the open ring
+    (no duplicated closing point). Triangle interiors stay planar between
+    boundary vertices — fine at kerb scale on park-sized polygons.
     """
     step = math.ceil(len(pts) / _GREEN_MAX_VERTS)
     if step > 1:
@@ -147,7 +152,7 @@ def _green_mesh(
         return None
     mesh = rhino3dm.Mesh()
     for (x, y), p in zip(pts, geom):
-        mesh.Vertices.Add(x, y, ground(p) + GREEN_RAISE_M)
+        mesh.Vertices.Add(x, y, ground(p) + raise_m)
     for a, b, c in tris:
         mesh.Faces.AddFace(a, b, c)
     mesh.Normals.ComputeNormals()
@@ -395,7 +400,10 @@ def _build_linework_group(
                         pl.ToPolylineCurve(), _attrs(surface_layers["PAVEMENTS"]))
                     pavements += 1
             elif _is_green(tags) and len(geom) >= 4 and geom[0] == geom[-1]:
-                mesh = _green_mesh(pts[:-1], geom[:-1], ground)
+                raise_m = (GREEN_NESTED_RAISE_M
+                           if tags.get("leisure") in _GREEN_NESTED
+                           else GREEN_RAISE_M)
+                mesh = _green_mesh(pts[:-1], geom[:-1], ground, raise_m)
                 if mesh is not None:
                     model.Objects.AddMesh(mesh, _attrs(surface_layers["GREENS"]))
                     greens += 1
