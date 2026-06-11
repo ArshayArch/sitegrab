@@ -4,3 +4,5 @@ rhino3dm==8.17.0
 pyproj==3.7.2
 ezdxf==1.4.4
 anthropic==0.109.1
+numpy==2.4.6
+pillow==12.2.0
