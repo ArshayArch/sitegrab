@@ -44,6 +44,24 @@ MIN_CONTOUR_LEN_M = 40.0
 TERRAIN_COLOR = (146, 116, 91)     # earth brown
 CONTOUR_COLOR = (196, 148, 90)     # lighter sand
 
+# ---------------------------------------------------------------------------
+# v6: the terrain is offered as an editable NURBS surface that INTERPOLATES
+# the elevation grid: control points are solved from the separable degree-3
+# collocation system at the Greville abscissae, so the surface passes through
+# every projected grid node exactly (a naive CVs=nodes fit smooths real
+# relief by metres and never qualified). Node fit is therefore not the
+# honesty question — RINGING is: a cubic interpolant can overshoot between
+# samples at sharp steps (gorge lips, quay walls, urban DEM artifacts) and
+# invent ground the data does not support. Every cell centre is checked and
+# the build falls back to the mesh when the surface escapes the [min, max]
+# band of the cell's four corner samples by more than this. Internal,
+# deliberately not a user setting.
+# ---------------------------------------------------------------------------
+TERRAIN_SURFACE_MAX_RINGING_M = 1.0
+# Guard only — current elevation fetch caps grids well below this.
+TERRAIN_SURFACE_MAX_CVS = 40000
+_NURBS_DEGREE = 3
+
 
 def select_contour_interval(zmin: float, zmax: float) -> float | None:
     """Contour interval for the relief, or None for an effectively flat site."""
@@ -75,6 +93,104 @@ def _project_nodes(
     lon2d, lat2d = np.meshgrid(grid.lons, grid.lats)
     xs, ys = transformer.transform(lon2d, lat2d)
     return xs, ys
+
+
+def _greville(n: int) -> np.ndarray:
+    """Greville abscissae for n CVs, clamped uniform knots (spacing 1), degree 3."""
+    m = n - _NURBS_DEGREE
+    knots = np.concatenate([[0.0, 0.0, 0.0], np.arange(1.0, m), [m, m, m]])
+    return (knots[:n] + knots[1:n + 1] + knots[2:n + 2]) / 3.0
+
+
+def _collocation_matrix(n: int) -> np.ndarray:
+    """A[r, j] = N_j(greville_r) for the degree-3 clamped uniform basis.
+
+    Cox-de Boor over the full-length knot vector (Rhino's stores one fewer
+    knot at each end; the bases are identical). Banded, but at grid scale
+    (n <= ~200) a dense solve is microseconds — not worth a band solver.
+    """
+    deg = _NURBS_DEGREE
+    m = n - deg
+    k = np.concatenate([[0.0] * (deg + 1), np.arange(1.0, m), [float(m)] * (deg + 1)])
+    A = np.zeros((n, n))
+    for r, t in enumerate(_greville(n)):
+        N = np.zeros((n + deg, deg + 1))
+        for j in range(n + deg - 1):
+            if (k[j] <= t < k[j + 1]) or (t == k[-1] and k[j] < k[j + 1] == k[-1]):
+                N[j, 0] = 1.0
+        for d in range(1, deg + 1):
+            for j in range(n + deg - d):
+                a = 0.0
+                if k[j + d] > k[j]:
+                    a += (t - k[j]) / (k[j + d] - k[j]) * N[j, d - 1]
+                if k[j + d + 1] > k[j + 1]:
+                    a += ((k[j + d + 1] - t) / (k[j + d + 1] - k[j + 1])
+                          * N[j + 1, d - 1])
+                N[j, d] = a
+        A[r] = N[:n, deg]
+    return A
+
+
+def _try_nurbs_surface(
+    grid: ElevationGrid, xs: np.ndarray, ys: np.ndarray
+) -> tuple[rhino3dm.NurbsSurface | None, float | None, str | None]:
+    """Attempt the terrain as an interpolating degree-3 NURBS surface.
+
+    Control points are solved so the surface passes through every projected
+    grid node (x, y AND z are interpolated; u <-> lon index, v <-> lat
+    index). Returns (surface, worst_ringing_m, None) on success or (None,
+    worst_ringing_m, reason) when the honest answer is to keep the mesh.
+    """
+    h, w = grid.elev.shape
+    order = _NURBS_DEGREE + 1
+    if h < order or w < order:
+        return None, None, f"grid {w}x{h} too small for a degree-3 surface"
+    if h * w > TERRAIN_SURFACE_MAX_CVS:
+        return None, None, f"{h * w} control points exceed the memory guard"
+
+    # Separable collocation: solve along u for every row (batched RHS), then
+    # along v for every column, all three coordinate channels at once.
+    data = np.dstack([xs, ys, grid.elev]).astype(float)        # (h, w, 3)
+    try:
+        X = np.linalg.solve(_collocation_matrix(w),
+                            data.transpose(1, 0, 2).reshape(w, h * 3))
+        cvs = np.linalg.solve(
+            _collocation_matrix(h),
+            X.reshape(w, h, 3).transpose(1, 0, 2).reshape(h, w * 3),
+        ).reshape(h, w, 3)
+    except np.linalg.LinAlgError:
+        return None, None, "collocation system singular"
+
+    srf = rhino3dm.NurbsSurface.Create(3, False, order, order, w, h)
+    for i in range(w):
+        for j in range(h):
+            x, y, z = cvs[j, i]
+            srf.Points[i, j] = rhino3dm.Point4d(
+                float(x), float(y), float(z), 1.0)
+    srf.KnotsU.CreateUniformKnots(1.0)
+    srf.KnotsV.CreateUniformKnots(1.0)
+    if not srf.IsValid:
+        return None, None, "constructed surface failed validity"
+
+    # Ringing check at every cell centre: how far the surface escapes the
+    # [min, max] band of the cell's four corner samples.
+    gu, gv = _greville(w), _greville(h)
+    elev = grid.elev
+    worst = 0.0
+    for i in range(w - 1):
+        tu = float((gu[i] + gu[i + 1]) / 2)
+        for j in range(h - 1):
+            z = srf.PointAt(tu, float((gv[j] + gv[j + 1]) / 2)).Z
+            corners = (float(elev[j, i]), float(elev[j, i + 1]),
+                       float(elev[j + 1, i]), float(elev[j + 1, i + 1]))
+            over = max(z - max(corners), min(corners) - z)
+            if over > worst:
+                worst = over
+    if worst > TERRAIN_SURFACE_MAX_RINGING_M:
+        return None, worst, (
+            f"interpolant rings {worst:.2f}m beyond the sampled relief "
+            f"(limit {TERRAIN_SURFACE_MAX_RINGING_M}m) - steps too sharp")
+    return srf, worst, None
 
 
 def _build_mesh(grid: ElevationGrid, xs: np.ndarray, ys: np.ndarray) -> rhino3dm.Mesh:
@@ -211,10 +327,26 @@ def add_terrain(
 
     xs, ys = _project_nodes(grid, transformer)
 
-    mesh = _build_mesh(grid, xs, ys)
+    # v6: attempt an editable interpolating NURBS surface first; keep the
+    # honest mesh when the interpolant would invent ground between samples
+    # (or can't be built).
     attrs = rhino3dm.ObjectAttributes()
     attrs.LayerIndex = surface_idx
-    model.Objects.AddMesh(mesh, attrs)
+    srf, ringing, fallback_reason = _try_nurbs_surface(grid, xs, ys)
+    if srf is not None:
+        model.Objects.AddSurface(srf, attrs)
+        mesh_counts = {"surface_type": "nurbs",
+                       "surface_cvs": f"{srf.Points.CountU}x{srf.Points.CountV}",
+                       "surface_ringing_m": round(ringing, 3)}
+    else:
+        mesh = _build_mesh(grid, xs, ys)
+        model.Objects.AddMesh(mesh, attrs)
+        mesh_counts = {"surface_type": "mesh",
+                       "surface_fallback_reason": fallback_reason,
+                       "mesh_vertices": len(mesh.Vertices),
+                       "mesh_faces": len(mesh.Faces)}
+        if ringing is not None:
+            mesh_counts["surface_ringing_m"] = round(ringing, 3)
 
     interval = select_contour_interval(grid.zmin, grid.zmax)
     contour_count = 0
@@ -231,8 +363,15 @@ def add_terrain(
                 if length < MIN_CONTOUR_LEN_M:
                     continue
                 pl = rhino3dm.Polyline()
+                px = py = None
                 for x, y in path:
+                    # When the level passes exactly through a grid node, two
+                    # cell edges yield the same crossing — Rhino rejects
+                    # polylines with zero-length segments as invalid.
+                    if px is not None and abs(x - px) < 1e-9 and abs(y - py) < 1e-9:
+                        continue
                     pl.Add(x, y, float(level))
+                    px, py = x, y
                 if pl.Count < 2:
                     continue
                 cattrs = rhino3dm.ObjectAttributes()
@@ -248,8 +387,7 @@ def add_terrain(
         "contour_interval": interval,
         "contour_levels": len(levels),
         "contour_curves": contour_count,
-        "mesh_vertices": len(mesh.Vertices),
-        "mesh_faces": len(mesh.Faces),
+        **mesh_counts,
     }
 
 
@@ -287,8 +425,12 @@ if __name__ == "__main__":
         by_layer[layers[obj.Attributes.LayerIndex]].append(obj)
     meshes = by_layer.get("surface", [])
     contours = by_layer.get("contours", [])
-    print(f"read-back: {len(meshes)} mesh on surface, {len(contours)} contour curves")
-    assert len(meshes) == 1, "expected exactly one terrain mesh"
+    kinds = [type(o.Geometry).__name__ for o in meshes]
+    print(f"read-back: {len(meshes)} object on surface ({kinds}), "
+          f"{len(contours)} contour curves")
+    assert len(meshes) == 1, "expected exactly one terrain surface object"
+    assert kinds[0] == ("NurbsSurface" if stats["surface_type"] == "nurbs"
+                        else "Mesh"), "read-back type != reported type"
     mbb = meshes[0].Geometry.GetBoundingBox()
     print(f"mesh bbox: X[{mbb.Min.X:.0f},{mbb.Max.X:.0f}] "
           f"Y[{mbb.Min.Y:.0f},{mbb.Max.Y:.0f}] Z[{mbb.Min.Z:.1f},{mbb.Max.Z:.1f}]")

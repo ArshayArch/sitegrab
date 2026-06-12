@@ -576,6 +576,7 @@ if __name__ == "__main__":
     meshes = contours = house_objs = pavs = grns = 0
     house_breps_solid = house_breps_open = house_mesh_objs = 0
     blocks_solid = blocks_open = 0
+    terrain_kind = "absent"
     green_kinds: dict[str, int] = {}
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
@@ -599,6 +600,7 @@ if __name__ == "__main__":
                     blocks_open += 1
         elif li == surf_idx:
             meshes += 1
+            terrain_kind = type(geo).__name__
         elif li == cont_idx:
             contours += 1
         elif li == pav_idx:
@@ -610,7 +612,7 @@ if __name__ == "__main__":
         elif li in layers and layers[li].Name.endswith(("_PL", "_LN", "_PT")):
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
-    print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
+    print(f"Terrain object  : {meshes} ({terrain_kind})  contour curves: {contours}")
     print(f"Greens read-back: {green_kinds}")
     print(f"Houses read-back: {house_objs} (solid breps={house_breps_solid}, "
           f"INVALID/open breps={house_breps_open}, mesh fallbacks={house_mesh_objs})")
