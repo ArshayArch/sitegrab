@@ -14,6 +14,7 @@ __pycache__/
 *.dxf
 *.zip
 sitegrab_*/
+bench_results*.json
 
 # OS / editor
 .DS_Store
