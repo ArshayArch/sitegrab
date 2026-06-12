@@ -436,6 +436,35 @@ def house_solid(
         return None
     return brep
 
+
+# ---------------------------------------------------------------------------
+# Free-tier memory governor for house solids. Measured on the canonical
+# bench sites (bench.py, Windows peak working set, no tracemalloc):
+#   - a house Brep costs ~90KB of transient C++ heap over the v5 mesh
+#     (500-house spike: +43.6MB RSS / 500);
+#   - the rest of the build peaks roughly linearly in building count:
+#     ~196MB at 1.5k buildings (Dubai), ~220MB at 4.7k (Clifton), ~475MB
+#     at 13k (Shoreditch) -> ~160MB base + ~25KB per building;
+#   - v5 at Shoreditch (475MB on this metric) deploys successfully on the
+#     512MB tier, so the budget targets staying AT OR BELOW that proven
+#     level rather than the nominal 512.
+# Houses convert to solids until the headroom is spent; the rest keep the
+# (v6-welded) display mesh and the build stats report the skip count and
+# the budget, never a silent downgrade.
+# ---------------------------------------------------------------------------
+SOLID_BUDGET_TARGET_MB = 440.0
+SOLID_BASE_MB = 160.0
+SOLID_PER_BUILDING_MB = 0.025
+SOLID_PER_HOUSE_MB = 0.09
+
+
+def house_solid_budget(n_buildings: int) -> int:
+    """Max house solids for a site with ``n_buildings`` building footprints."""
+    headroom = (SOLID_BUDGET_TARGET_MB
+                - (SOLID_BASE_MB + SOLID_PER_BUILDING_MB * n_buildings))
+    return max(0, int(headroom / SOLID_PER_HOUSE_MB))
+
+
 # Lean query: buildings, main roads, water only.
 _QUERY_TEMPLATE = """
 [out:json][timeout:180];
@@ -522,8 +551,11 @@ def build_rhino(
         return a
 
     buildings = roads = water = 0
-    house_solids = house_mesh_fallbacks = 0
+    house_solids = house_mesh_fallbacks = house_budget_skips = 0
     solid_failures: dict[str, int] = {}
+    solid_budget = house_solid_budget(sum(
+        1 for el in data.get("elements", [])
+        if el.get("type") == "way" and "building" in el.get("tags", {})))
 
     for el in data.get("elements", []):
         if el.get("type") != "way":
@@ -537,7 +569,11 @@ def build_rhino(
         if "building" in tags:
             height, _estimated = building_height(tags, pts, el.get("id", 0))
             if is_house(tags, _footprint_area_m2(pts)):
-                solid = house_solid(pts, 0.0, height, solid_failures)
+                if house_solids < solid_budget:
+                    solid = house_solid(pts, 0.0, height, solid_failures)
+                else:
+                    solid = None
+                    house_budget_skips += 1
                 if solid is not None:
                     model.Objects.AddBrep(solid, attrs("BUILDINGS_houses"))
                     buildings += 1
@@ -598,6 +634,8 @@ def build_rhino(
         "water": water,
         "house_solids": house_solids,
         "house_mesh_fallbacks": house_mesh_fallbacks,
+        "house_solid_budget": solid_budget,
+        "house_budget_skips": house_budget_skips,
         "solid_failures": solid_failures,
     }
 

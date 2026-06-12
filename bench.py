@@ -75,6 +75,7 @@ def run_one(name: str) -> dict:
         "greens": stats["greens"],
         "terrain": stats["terrain"],
         **{k: stats[k] for k in ("house_solids", "house_mesh_fallbacks",
+                                 "house_solid_budget", "house_budget_skips",
                                  "greens_planar", "greens_mesh",
                                  "terrain_surface")
            if k in stats},

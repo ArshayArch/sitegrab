@@ -230,8 +230,11 @@ def _build_3d_group(
     }
 
     buildings = houses = roads = water = 0
-    house_solids = house_mesh_fallbacks = 0
+    house_solids = house_mesh_fallbacks = house_budget_skips = 0
     solid_failures: dict[str, int] = {}
+    solid_budget = rh.house_solid_budget(sum(
+        1 for el in data.get("elements", [])
+        if el.get("type") == "way" and "building" in el.get("tags", {})))
     base_z_samples: list[float] = []  # first few building bases, for verification
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
@@ -255,7 +258,11 @@ def _build_3d_group(
             height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
             if rh.is_house(tags, rh._footprint_area_m2(pts)):
                 added = False
-                solid = rh.house_solid(pts, base, height, solid_failures)
+                if house_solids < solid_budget:
+                    solid = rh.house_solid(pts, base, height, solid_failures)
+                else:
+                    solid = None
+                    house_budget_skips += 1
                 if solid is not None:
                     model.Objects.AddBrep(solid, _attrs(cache["BUILDINGS_houses"]))
                     house_solids += 1
@@ -325,6 +332,8 @@ def _build_3d_group(
         "houses": houses,
         "house_solids": house_solids,
         "house_mesh_fallbacks": house_mesh_fallbacks,
+        "house_solid_budget": solid_budget,
+        "house_budget_skips": house_budget_skips,
         "solid_failures": solid_failures,
         "roads": roads,
         "water": water,
@@ -508,6 +517,8 @@ def build_combined(
         "houses": g3d["houses"],
         "house_solids": g3d["house_solids"],
         "house_mesh_fallbacks": g3d["house_mesh_fallbacks"],
+        "house_solid_budget": g3d["house_solid_budget"],
+        "house_budget_skips": g3d["house_budget_skips"],
         "solid_failures": g3d["solid_failures"],
         "roads": g3d["roads"],
         "water": g3d["water"],
@@ -549,7 +560,8 @@ if __name__ == "__main__":
     print(f"Buildings       : {stats['buildings']}  (houses with pitched roofs: "
           f"{stats['houses']})  Roads: {stats['roads']}  Water: {stats['water']}")
     print(f"House solids    : {stats['house_solids']}  mesh fallbacks: "
-          f"{stats['house_mesh_fallbacks']}")
+          f"{stats['house_mesh_fallbacks']}  budget skips: "
+          f"{stats['house_budget_skips']} (budget {stats['house_solid_budget']})")
     if stats["solid_failures"]:
         print(f"Solid failures  : {stats['solid_failures']}")
     print(f"Surfaces        : pavements={stats['pavements']}  greens={stats['greens']} "
