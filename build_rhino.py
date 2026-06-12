@@ -11,7 +11,9 @@ metres from the origin). That is correct and intentional; it is NOT recentred.
 
 from __future__ import annotations
 
+import base64
 import math
+import struct
 from typing import Any
 
 import rhino3dm
@@ -180,20 +182,22 @@ def _principal_obb(
     return centre, (ux, uy), (u1 - u0) / 2, (v1 - v0) / 2
 
 
-def house_mesh(
+def _house_frame(
     pts_xy: list[tuple[float, float]], base: float, height: float
-) -> rhino3dm.Mesh | None:
-    """Hipped-roof house mesh, or None (caller falls back to a flat extrusion).
+) -> tuple[list[tuple[float, float]], float, float, list[tuple[float, float]]] | None:
+    """Shared hip-roof setup -> (ccw_pts, eaves_z, ridge_z, ridge_pts), or None.
 
-    Walls rise from ``base`` to eaves; each eaves edge is roofed to its
-    projection on a ridge along the footprint's principal axis (square plans
-    collapse to a pyramid). The ridge tops out at ``base + height``, so a
-    real OSM ``height`` keeps meaning height-to-ridge. The underside is left
-    open — it sits in/on the ground and is never seen.
+    Cleans the footprint (closing duplicate stripped, consecutive duplicates
+    welded, CCW winding), finds the ridge along the principal axis and clamps
+    the rise; ``ridge_pts[i]`` is footprint vertex i's projection onto the
+    ridge segment. None means the caller should fall back to a flat extrusion
+    (sliver footprint, no room for a roof, degenerate input).
     """
     pts = list(pts_xy)
     if len(pts) >= 2 and pts[0] == pts[-1]:
         pts = pts[:-1]
+    pts = [p for k, p in enumerate(pts)
+           if math.hypot(p[0] - pts[k - 1][0], p[1] - pts[k - 1][1]) > 1e-6]
     if len(pts) < 3:
         return None
     # CCW winding so the wall faces point outward.
@@ -215,6 +219,113 @@ def house_mesh(
     ridge_z = base + height
     half_ridge = max(half_len - half_wid, 0.0)  # 45-degree hip ends
     rx0, ry0 = cx - ux * half_ridge, cy - uy * half_ridge
+    ridge_pts: list[tuple[float, float]] = []
+    for x, y in pts:
+        t = (x - rx0) * ux + (y - ry0) * uy
+        t = min(max(t, 0.0), 2 * half_ridge)
+        ridge_pts.append((rx0 + ux * t, ry0 + uy * t))
+    return pts, eaves_z, ridge_z, ridge_pts
+
+
+def house_mesh(
+    pts_xy: list[tuple[float, float]], base: float, height: float
+) -> rhino3dm.Mesh | None:
+    """Hipped-roof house mesh, or None (caller falls back to a flat extrusion).
+
+    Walls rise from ``base`` to eaves; each eaves edge is roofed to its
+    projection on a ridge along the footprint's principal axis (square plans
+    collapse to a pyramid). The ridge tops out at ``base + height``, so a
+    real OSM ``height`` keeps meaning height-to-ridge. The underside is left
+    open — it sits in/on the ground and is never seen. Since v6 this is the
+    FALLBACK when :func:`house_solid` cannot produce a watertight Brep, and
+    shares its welded-ridge construction (v5's per-vertex ridge duplicates
+    made Rhino flag many house meshes as degenerate).
+    """
+    frame = _house_frame(pts_xy, base, height)
+    if frame is None:
+        return None
+    return _house_welded_mesh(frame, base, floor=False)
+
+
+# ---------------------------------------------------------------------------
+# v6: watertight house solids.
+# rhino3dm can convert a closed mesh to a Brep (Brep.CreateFromMesh) but, unlike
+# RhinoCommon, exposes no SetTolerancesBoxesAndFlags — the resulting Brep's edge
+# tolerances stay at ON_UNSET_VALUE and Rhino REJECTS such breps as invalid
+# (verified empirically: doc.Objects.AddBrep returns Guid.Empty). Our faces meet
+# exactly at shared mesh vertices, so the true edge tolerance is 0.0; we set it
+# by patching the unset sentinel inside the brep's serialized archive, which is
+# safe because ON_UNSET_VALUE (-1.23432101234321e308) cannot occur as real data.
+# ---------------------------------------------------------------------------
+
+_ON_UNSET_BYTES = struct.pack("<d", -1.23432101234321e308)
+_ZERO_BYTES = struct.pack("<d", 0.0)
+
+
+def _fix_brep_tolerances(brep: rhino3dm.Brep) -> rhino3dm.Brep | None:
+    """Replace unset edge/vertex tolerances with 0.0 via an archive round-trip."""
+    enc = brep.Encode()
+    data = base64.b64decode(enc["data"])
+    if _ON_UNSET_BYTES not in data:
+        return brep
+    enc["data"] = base64.b64encode(
+        data.replace(_ON_UNSET_BYTES, _ZERO_BYTES)).decode("ascii")
+    return rhino3dm.CommonObject.Decode(enc)
+
+
+def _earclip(pts: list[tuple[float, float]]) -> list[tuple[int, int, int]]:
+    """Triangulate a simple CCW polygon by ear clipping -> index triples.
+
+    Handles the concave outlines parks and houses actually have. If clipping
+    stalls (self-intersecting input), the remainder is fanned — visually
+    acceptable for the rare degenerate way.
+    """
+    n = len(pts)
+    if n < 3:
+        return []
+
+    def cross(o: int, a: int, b: int) -> float:
+        return ((pts[a][0] - pts[o][0]) * (pts[b][1] - pts[o][1])
+                - (pts[a][1] - pts[o][1]) * (pts[b][0] - pts[o][0]))
+
+    signed = sum(x1 * y2 - x2 * y1
+                 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))
+    idx = list(range(n)) if signed >= 0 else list(range(n - 1, -1, -1))
+    tris: list[tuple[int, int, int]] = []
+    while len(idx) > 3:
+        for k in range(len(idx)):
+            a, b, c = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
+            if cross(a, b, c) <= 0:  # reflex corner, not an ear
+                continue
+            if any(cross(a, b, p) > 0 and cross(b, c, p) > 0 and cross(c, a, p) > 0
+                   for p in idx if p not in (a, b, c)):
+                continue
+            tris.append((a, b, c))
+            del idx[k]
+            break
+        else:  # no ear found: fan the rest and stop
+            tris.extend((idx[0], idx[k], idx[k + 1]) for k in range(1, len(idx) - 1))
+            return tris
+    tris.append((idx[0], idx[1], idx[2]))
+    return tris
+
+
+def _house_welded_mesh(
+    frame: tuple[list[tuple[float, float]], float, float, list[tuple[float, float]]],
+    base: float,
+    floor: bool,
+) -> rhino3dm.Mesh:
+    """Hip-roof mesh over a :func:`_house_frame`, with welded ridge topology.
+
+    The ridge is a SHARED ordered vertex sequence: coincident projections
+    weld to one vertex (else the hip ends leave naked edges and degenerate
+    faces), and every distinct projection becomes a ridge vertex that ALL
+    roof faces passing over it must include — fanning across the in-between
+    ridge vertices keeps the ridge free of T-junctions. With ``floor`` the
+    footprint is triangulated in (faces down) so the mesh can close into a
+    solid; without it the underside stays open (the display-mesh fallback).
+    """
+    pts, eaves_z, ridge_z, ridge_pts = frame
 
     mesh = rhino3dm.Mesh()
     n = len(pts)
@@ -222,22 +333,108 @@ def house_mesh(
         mesh.Vertices.Add(x, y, base)
     for x, y in pts:
         mesh.Vertices.Add(x, y, eaves_z)
-    ridge_pts: list[tuple[float, float]] = []
-    for x, y in pts:
-        t = (x - rx0) * ux + (y - ry0) * uy
-        t = min(max(t, 0.0), 2 * half_ridge)
-        ridge_pts.append((rx0 + ux * t, ry0 + uy * t))
-        mesh.Vertices.Add(ridge_pts[-1][0], ridge_pts[-1][1], ridge_z)
+    rx0, ry0 = ridge_pts[0]
+    rdx = rdy = 0.0
+    for x, y in ridge_pts[1:]:
+        if abs(x - rx0) + abs(y - ry0) > 1e-9:
+            d = math.hypot(x - rx0, y - ry0)
+            rdx, rdy = (x - rx0) / d, (y - ry0) / d
+            break
+    ridge_t: list[float] = []        # parameter of each footprint vertex's projection
+    uniq: dict[float, int] = {}      # rounded parameter -> mesh vertex index
+    for x, y in ridge_pts:
+        # Weld at millimetre scale: at UTM coordinate magnitudes, projections
+        # closer than that collapse to coincident vertex locations and Rhino
+        # flags the touching faces as degenerate.
+        t = round((x - rx0) * rdx + (y - ry0) * rdy, 3)
+        if t not in uniq:
+            uniq[t] = 2 * n + len(uniq)
+            mesh.Vertices.Add(x, y, ridge_z)
+        ridge_t.append(t)
+    ordered_t = sorted(uniq)         # ridge vertices in axis order
+
     for i in range(n):
         j = (i + 1) % n
-        mesh.Faces.AddFace(i, j, n + j, n + i)  # wall quad
-        ri, rj = ridge_pts[i], ridge_pts[j]
-        if abs(ri[0] - rj[0]) < 1e-9 and abs(ri[1] - rj[1]) < 1e-9:
-            mesh.Faces.AddFace(n + i, n + j, 2 * n + j)  # roof triangle
-        else:
-            mesh.Faces.AddFace(n + i, n + j, 2 * n + j, 2 * n + i)  # roof quad
+        mesh.Faces.AddFace(i, j, n + j, n + i)  # wall quad (planar: vertical)
+        ti, tj = ridge_t[i], ridge_t[j]
+        if ti == tj:
+            mesh.Faces.AddFace(n + i, n + j, uniq[tj])  # hip-end triangle
+            continue
+        # Ridge vertices this roof face passes over, walked from ti to tj.
+        lo, hi = min(ti, tj), max(ti, tj)
+        span = [t for t in ordered_t if lo <= t <= hi]
+        if tj < ti:
+            span.reverse()
+        ring = [uniq[t] for t in span]  # ring[0] under vertex i, ring[-1] under j
+        # Planar-quad fast path: eaves edge parallel to the ridge and nothing
+        # in between (the common rectangle case keeps clean 4-sided faces).
+        ex, ey = pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]
+        if len(ring) == 2 and abs(ex * rdy - ey * rdx) < 1e-6 * math.hypot(ex, ey):
+            mesh.Faces.AddFace(n + i, n + j, ring[1], ring[0])
+            continue
+        mesh.Faces.AddFace(n + i, n + j, ring[-1])  # to vertex j's projection
+        for k in range(len(ring) - 1, 0, -1):       # walk the ridge back to i's
+            mesh.Faces.AddFace(n + i, ring[k], ring[k - 1])
+    if floor:
+        # Floor: triangulated (footprints can be concave), wound to face down.
+        for a, b, c in _earclip(pts):
+            mesh.Faces.AddFace(c, b, a)
     mesh.Normals.ComputeNormals()
     return mesh
+
+
+def house_solid(
+    pts_xy: list[tuple[float, float]],
+    base: float,
+    height: float,
+    failures: dict[str, int] | None = None,
+) -> rhino3dm.Brep | None:
+    """Watertight hipped-house Brep (walls + roof + floor), or None.
+
+    Same geometry as :func:`house_mesh` plus a triangulated floor, built as a
+    topologically CLOSED mesh: ridge projections that coincide (the clamped
+    hip ends) are welded to one vertex, every distinct projection becomes a
+    shared ridge vertex all passing roof faces fan across, and roof quads
+    whose eaves edge is not parallel to the ridge — which would be non-planar
+    faces — are split into triangles. The closed mesh becomes a Brep of
+    trimmed planar faces, gets its tolerances fixed, and is returned only if
+    rhino3dm agrees it is a valid closed solid; any failure returns None so
+    the caller can fall back to the v5 mesh and REPORT it (never silently
+    degrade the file). When ``failures`` is given, the failing stage is
+    counted in it: the honesty log for "didn't close, and why".
+    """
+    def fail(reason: str) -> None:
+        if failures is not None:
+            failures[reason] = failures.get(reason, 0) + 1
+
+    frame = _house_frame(pts_xy, base, height)
+    if frame is None:
+        fail("no roof frame (sliver/degenerate/too low)")
+        return None
+
+    mesh = _house_welded_mesh(frame, base, floor=True)
+    if not mesh.IsClosed:
+        # Almost always a concave footprint whose single-ridge hip roof
+        # self-overlaps (ridge sub-segments covered by >2 faces). v5's open
+        # mesh tolerated that; a clean solid needs a straight-skeleton roof
+        # (v7 candidate). Fall back honestly rather than ship a wrong solid.
+        fail("roof self-overlap on concave footprint (mesh did not close)")
+        return None
+    brep = rhino3dm.Brep.CreateFromMesh(mesh, True)
+    if brep is None:
+        fail("CreateFromMesh returned None")
+        return None
+    brep = _fix_brep_tolerances(brep)
+    if brep is None:
+        fail("tolerance fix round-trip failed")
+        return None
+    if not brep.IsValid:
+        fail("brep invalid after conversion")
+        return None
+    if not brep.IsSolid:
+        fail("brep not closed")
+        return None
+    return brep
 
 # Lean query: buildings, main roads, water only.
 _QUERY_TEMPLATE = """
@@ -325,6 +522,8 @@ def build_rhino(
         return a
 
     buildings = roads = water = 0
+    house_solids = house_mesh_fallbacks = 0
+    solid_failures: dict[str, int] = {}
 
     for el in data.get("elements", []):
         if el.get("type") != "way":
@@ -338,10 +537,17 @@ def build_rhino(
         if "building" in tags:
             height, _estimated = building_height(tags, pts, el.get("id", 0))
             if is_house(tags, _footprint_area_m2(pts)):
+                solid = house_solid(pts, 0.0, height, solid_failures)
+                if solid is not None:
+                    model.Objects.AddBrep(solid, attrs("BUILDINGS_houses"))
+                    buildings += 1
+                    house_solids += 1
+                    continue
                 mesh = house_mesh(pts, 0.0, height)
                 if mesh is not None:
                     model.Objects.AddMesh(mesh, attrs("BUILDINGS_houses"))
                     buildings += 1
+                    house_mesh_fallbacks += 1
                     continue
             curve = _closed_curve(pts, 0.0)
             if curve is None or not curve.IsClosed:
@@ -390,6 +596,9 @@ def build_rhino(
         "buildings": buildings,
         "roads": roads,
         "water": water,
+        "house_solids": house_solids,
+        "house_mesh_fallbacks": house_mesh_fallbacks,
+        "solid_failures": solid_failures,
     }
 
 

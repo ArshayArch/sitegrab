@@ -94,41 +94,9 @@ def _is_green(tags: dict[str, str]) -> bool:
             or tags.get("natural") in _GREEN_NATURAL)
 
 
-def _earclip(pts: list[tuple[float, float]]) -> list[tuple[int, int, int]]:
-    """Triangulate a simple polygon by ear clipping -> index triples.
-
-    Handles the concave outlines parks actually have. If clipping stalls
-    (self-intersecting input), the remainder is fanned — visually acceptable
-    for the rare degenerate way.
-    """
-    n = len(pts)
-    if n < 3:
-        return []
-
-    def cross(o: int, a: int, b: int) -> float:
-        return ((pts[a][0] - pts[o][0]) * (pts[b][1] - pts[o][1])
-                - (pts[a][1] - pts[o][1]) * (pts[b][0] - pts[o][0]))
-
-    signed = sum(x1 * y2 - x2 * y1
-                 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))
-    idx = list(range(n)) if signed >= 0 else list(range(n - 1, -1, -1))
-    tris: list[tuple[int, int, int]] = []
-    while len(idx) > 3:
-        for k in range(len(idx)):
-            a, b, c = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
-            if cross(a, b, c) <= 0:  # reflex corner, not an ear
-                continue
-            if any(cross(a, b, p) > 0 and cross(b, c, p) > 0 and cross(c, a, p) > 0
-                   for p in idx if p not in (a, b, c)):
-                continue
-            tris.append((a, b, c))
-            del idx[k]
-            break
-        else:  # no ear found: fan the rest and stop
-            tris.extend((idx[0], idx[k], idx[k + 1]) for k in range(1, len(idx) - 1))
-            return tris
-    tris.append((idx[0], idx[1], idx[2]))
-    return tris
+# Polygon triangulation lives in build_rhino since v6 (house solids need it
+# for their floor caps too).
+_earclip = rh._earclip
 
 
 def _green_mesh(
@@ -235,6 +203,8 @@ def _build_3d_group(
     }
 
     buildings = houses = roads = water = 0
+    house_solids = house_mesh_fallbacks = 0
+    solid_failures: dict[str, int] = {}
     base_z_samples: list[float] = []  # first few building bases, for verification
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
@@ -257,14 +227,25 @@ def _build_3d_group(
             )
             height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
             if rh.is_house(tags, rh._footprint_area_m2(pts)):
-                mesh = rh.house_mesh(pts, base, height)
-                if mesh is not None:
-                    model.Objects.AddMesh(mesh, _attrs(cache["BUILDINGS_houses"]))
+                added = False
+                solid = rh.house_solid(pts, base, height, solid_failures)
+                if solid is not None:
+                    model.Objects.AddBrep(solid, _attrs(cache["BUILDINGS_houses"]))
+                    house_solids += 1
+                    added = True
+                else:
+                    mesh = rh.house_mesh(pts, base, height)
+                    if mesh is not None:
+                        model.Objects.AddMesh(mesh, _attrs(cache["BUILDINGS_houses"]))
+                        house_mesh_fallbacks += 1
+                        added = True
+                if added:
                     if len(base_z_samples) < 10:
                         base_z_samples.append(base)
                     buildings += 1
                     houses += 1
                     continue
+                # else: fall through to the flat extrusion below
             curve = rh._closed_curve(_ensure_ccw(pts), base)
             if curve is None or not curve.IsClosed:
                 continue
@@ -315,6 +296,9 @@ def _build_3d_group(
         "objects": total,
         "buildings": buildings,
         "houses": houses,
+        "house_solids": house_solids,
+        "house_mesh_fallbacks": house_mesh_fallbacks,
+        "solid_failures": solid_failures,
         "roads": roads,
         "water": water,
         "base_z_samples": base_z_samples,
@@ -482,6 +466,9 @@ def build_combined(
         "objects_linework": glin["objects"],
         "buildings": g3d["buildings"],
         "houses": g3d["houses"],
+        "house_solids": g3d["house_solids"],
+        "house_mesh_fallbacks": g3d["house_mesh_fallbacks"],
+        "solid_failures": g3d["solid_failures"],
         "roads": g3d["roads"],
         "water": g3d["water"],
         "pavements": glin["pavements"],
@@ -519,6 +506,10 @@ if __name__ == "__main__":
           f"Linework={stats['has_linework_group']}  TERRAIN={stats['has_terrain_group']}")
     print(f"Buildings       : {stats['buildings']}  (houses with pitched roofs: "
           f"{stats['houses']})  Roads: {stats['roads']}  Water: {stats['water']}")
+    print(f"House solids    : {stats['house_solids']}  mesh fallbacks: "
+          f"{stats['house_mesh_fallbacks']}")
+    if stats["solid_failures"]:
+        print(f"Solid failures  : {stats['solid_failures']}")
     print(f"Surfaces        : pavements={stats['pavements']}  greens={stats['greens']}")
     print(f"Terrain         : {stats['terrain']}")
     print(f"Datum           : {stats['datum']}")
@@ -540,13 +531,28 @@ if __name__ == "__main__":
     bases: list[float] = []
     lin_zmax, lin_zmin = float("-inf"), float("inf")
     meshes = contours = house_objs = pavs = grns = 0
+    house_breps_solid = house_breps_open = house_mesh_objs = 0
+    blocks_solid = blocks_open = 0
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
-        bb = obj.Geometry.GetBoundingBox()
+        geo = obj.Geometry
+        bb = geo.GetBoundingBox()
         if li in bldg_idx:
             bases.append(bb.Min.Z)
             if li == house_idx:
                 house_objs += 1
+                if isinstance(geo, rhino3dm.Brep):
+                    if geo.IsValid and geo.IsSolid:
+                        house_breps_solid += 1
+                    else:
+                        house_breps_open += 1
+                else:
+                    house_mesh_objs += 1
+            elif isinstance(geo, rhino3dm.Extrusion):
+                if geo.IsSolid and geo.IsCappedAtTop and geo.IsCappedAtBottom:
+                    blocks_solid += 1
+                else:
+                    blocks_open += 1
         elif li == surf_idx:
             meshes += 1
         elif li == cont_idx:
@@ -559,7 +565,10 @@ if __name__ == "__main__":
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
     print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
-    print(f"House meshes    : {house_objs} (read-back, expect == houses above)")
+    print(f"Houses read-back: {house_objs} (solid breps={house_breps_solid}, "
+          f"INVALID/open breps={house_breps_open}, mesh fallbacks={house_mesh_objs})")
+    print(f"Blocks read-back: solid capped extrusions={blocks_solid}, "
+          f"NOT solid={blocks_open}")
     print(f"Surfaces        : pavements={pavs}  greens={grns} (read-back)")
     print(f"Building bases  : min={min(bases):.1f}  max={max(bases):.1f}  "
           f"distinct={len({round(b, 2) for b in bases})}  (expect stepping, not all 0)")
