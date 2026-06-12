@@ -70,6 +70,10 @@ FLAT_GROUND_Z = 0.0
 # ---------------------------------------------------------------------------
 PAVEMENT_RAISE_M = 0.12  # kerb height
 GREEN_RAISE_M = 0.05
+# v6: a green whose boundary ground varies no more than this becomes a clean
+# planar trimmed surface (a single editable Brep face) instead of a draped
+# mesh — flattening within DEM noise is honest; flattening a real slope isn't.
+GREEN_PLANAR_MAX_RELIEF_M = 0.75
 # Pitches/playgrounds/gardens usually sit INSIDE a park polygon; a slightly
 # higher offset keeps the nested surface from z-fighting its parent.
 GREEN_NESTED_RAISE_M = 0.08
@@ -125,6 +129,29 @@ def _green_mesh(
         mesh.Faces.AddFace(a, b, c)
     mesh.Normals.ComputeNormals()
     return mesh
+
+
+def _green_plane(
+    pts: list[tuple[float, float]], z: float
+) -> rhino3dm.Brep | None:
+    """Single trimmed planar Brep face for a green on effectively-flat ground.
+
+    ``pts`` is the open boundary ring (no duplicated closing point), kept at
+    full resolution — a trim curve costs nothing compared to triangulation.
+    Returns None when the trim fails (degenerate/self-intersecting outline);
+    the caller falls back to the draped mesh and counts it.
+    """
+    if len(pts) < 3:
+        return None
+    curve = rh._closed_curve(_ensure_ccw(pts), z)
+    if curve is None:
+        return None
+    plane = rhino3dm.Plane(
+        rhino3dm.Point3d(pts[0][0], pts[0][1], z), rhino3dm.Vector3d(0, 0, 1))
+    brep = rhino3dm.Brep.CreateTrimmedPlane(plane, curve)
+    if brep is None or not brep.IsValid:
+        return None
+    return brep
 
 
 def _ensure_ccw(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -339,6 +366,7 @@ def _build_linework_group(
         return grid.sample(p["lon"], p["lat"]) if grid is not None else datum
 
     objects = pavements = greens = 0
+    greens_planar = greens_mesh = 0
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
     elements = data.get("elements", [])
@@ -387,13 +415,25 @@ def _build_linework_group(
                 raise_m = (GREEN_NESTED_RAISE_M
                            if tags.get("leisure") in _GREEN_NESTED
                            else GREEN_RAISE_M)
+                # v6: effectively-flat greens become clean planar surfaces;
+                # greens on real slopes keep the honest draped mesh.
+                zs = [ground(p) for p in geom[:-1]]
+                if max(zs) - min(zs) <= GREEN_PLANAR_MAX_RELIEF_M:
+                    srf = _green_plane(pts[:-1], sum(zs) / len(zs) + raise_m)
+                    if srf is not None:
+                        model.Objects.AddBrep(srf, _attrs(surface_layers["GREENS"]))
+                        greens += 1
+                        greens_planar += 1
+                        continue
                 mesh = _green_mesh(pts[:-1], geom[:-1], ground, raise_m)
                 if mesh is not None:
                     model.Objects.AddMesh(mesh, _attrs(surface_layers["GREENS"]))
                     greens += 1
+                    greens_mesh += 1
 
     return {"objects": objects, "layers": len(cache),
-            "pavements": pavements, "greens": greens}
+            "pavements": pavements, "greens": greens,
+            "greens_planar": greens_planar, "greens_mesh": greens_mesh}
 
 
 def build_combined(
@@ -473,6 +513,8 @@ def build_combined(
         "water": g3d["water"],
         "pavements": glin["pavements"],
         "greens": glin["greens"],
+        "greens_planar": glin["greens_planar"],
+        "greens_mesh": glin["greens_mesh"],
         "base_z_samples": g3d["base_z_samples"],
         "datum": datum,
         "has_3d_group": has_3d,
@@ -510,7 +552,8 @@ if __name__ == "__main__":
           f"{stats['house_mesh_fallbacks']}")
     if stats["solid_failures"]:
         print(f"Solid failures  : {stats['solid_failures']}")
-    print(f"Surfaces        : pavements={stats['pavements']}  greens={stats['greens']}")
+    print(f"Surfaces        : pavements={stats['pavements']}  greens={stats['greens']} "
+          f"(planar breps={stats['greens_planar']}, draped meshes={stats['greens_mesh']})")
     print(f"Terrain         : {stats['terrain']}")
     print(f"Datum           : {stats['datum']}")
     print(f"tracemalloc peak: {peak / 1048576:.1f} MB")
@@ -533,6 +576,7 @@ if __name__ == "__main__":
     meshes = contours = house_objs = pavs = grns = 0
     house_breps_solid = house_breps_open = house_mesh_objs = 0
     blocks_solid = blocks_open = 0
+    green_kinds: dict[str, int] = {}
     for obj in model.Objects:
         li = obj.Attributes.LayerIndex
         geo = obj.Geometry
@@ -561,10 +605,13 @@ if __name__ == "__main__":
             pavs += 1
         elif li == grn_idx:
             grns += 1
+            kind = type(geo).__name__
+            green_kinds[kind] = green_kinds.get(kind, 0) + 1
         elif li in layers and layers[li].Name.endswith(("_PL", "_LN", "_PT")):
             lin_zmax = max(lin_zmax, bb.Max.Z)
             lin_zmin = min(lin_zmin, bb.Min.Z)
     print(f"Terrain mesh    : {meshes}  contour curves: {contours}")
+    print(f"Greens read-back: {green_kinds}")
     print(f"Houses read-back: {house_objs} (solid breps={house_breps_solid}, "
           f"INVALID/open breps={house_breps_open}, mesh fallbacks={house_mesh_objs})")
     print(f"Blocks read-back: solid capped extrusions={blocks_solid}, "
