@@ -6,3 +6,4 @@ ezdxf==1.4.4
 anthropic==0.109.1
 numpy==2.4.6
 pillow==12.2.0
+astral==3.2
