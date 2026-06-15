@@ -37,8 +37,12 @@ from .solar import sun_at
 MIN_SHADOW_ALTITUDE_DEG = 3.0
 
 # Cap on shadow casters per site (tallest kept). Bounds file size + memory on
-# the stress case while keeping the meaningful (tall) shadows.
-SHADOW_MAX_BUILDINGS = 3000
+# the stress case while keeping the meaningful (tall) shadows. Measured: at 3000
+# casters Shoreditch peaked 275MB (less than half the 512MB tier), so the cap is
+# set by FILE SIZE, not memory — 6000 leaves typical neighbourhood sites
+# (a few thousand buildings) fully cast and only caps a true megasite, which is
+# reported. Uncapped full shadows are the natural Pro-tier feature (see v7 cycle).
+SHADOW_MAX_BUILDINGS = 6000
 
 # Which key dates get shadows: the solstices bound the year's shadow range.
 _SHADOW_DATE_KEYS = ("summer_solstice", "winter_solstice")

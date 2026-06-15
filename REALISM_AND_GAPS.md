@@ -250,3 +250,176 @@ quote matched-data runs.)
   a Pro plan defensible.
 - Lovely but unmonetisable: straight-skeleton roofs, courtyards — correctness work that
   earns trust, not revenue.
+
+---
+
+# v7 — Site-analysis framework + Sun Path (the pivot begins)
+
+Real user feedback is now data: *the geometry is useful but not pay-worthy; site
+analysis is.* v7 is the first step of that pivot — a pluggable analysis framework
+(ANALYSIS_FRAMEWORK.md) with **Sun Path** as its first module. Geometry is
+untouched; this is built alongside it.
+
+## What shipped (the honesty ledger)
+
+- **The framework** (`analysis/`): a four-type contract (`SiteContext`,
+  `AnalysisSpec`, `Param`, `AnalysisResult`) + registry + a single `runner` that
+  is the only bridge to the existing pipeline. A module declares its data source,
+  what it `requires` and `outputs`; the runner resolves the site with the
+  *existing* `resolve_area`/`get_transformer` (same caps, same UTM zone -> automatic
+  alignment) and lazily attaches only the declared data sources. DATA and
+  REPRESENTATION are kept in separate files per module.
+- **Sun Path data** (`solar.py`): sun azimuth/altitude **calculated** with
+  `astral` — free, keyless, no API/billing. Verified against the exact identity
+  `noon_alt = 90 - |lat - decl|` across both hemispheres and the equator
+  (Greenwich 62.0/38.5/15.1 deg vs predicted 61.96/38.52/15.08). Hemisphere-aware
+  summer/winter labels; hour marks in local solar time.
+- **`astral`, not `pvlib`** (the deploy-risk dependency call): `pvlib` pulls
+  `pandas`+`scipy` (>100 MB image, tens of MB resident); `astral` is pure-Python
+  with one tiny dep (`tzdata`). The precision difference is invisible at a 250 m
+  arc radius (0.1 deg ~ sub-cm). The 512 MB tier is the binding constraint, so we
+  took the dep that cannot break the deploy; its import + a known sun altitude is
+  asserted in the Docker build.
+- **Sun Path geometry** (`sunpath.py`): 3D sun arcs + labelled hourly points for
+  the three key dates, on granular `SUN/...` layers, in the same UTM as the model;
+  DXF carries the plan projection. Verified on Clifton: summer arc peak 1287 m >
+  winter 381 m (lower) and summer span wider (longer day).
+- **True north, established and made visible**: `astral` gives true azimuth; the
+  model is in UTM grid. We **measure** the meridian convergence (project a point
+  due north through the same transformer) and rotate every azimuth into the grid
+  by it, so arcs/points/shadows are physically consistent with the buildings.
+  True north is drawn on `SUN/north` for visual confirmation (-0.30 deg at Clifton).
+- **Cast shadows** (`shadows.py`): flat-ground projection (convex hull of the
+  footprint and its roof-projection) is the shipped baseline — exact for
+  rectangular plans, a documented slight over-estimate for concave ones; cast on
+  both solstices at the chosen times. **Terrain-draped shadows succeeded** as the
+  stretch (separate `shadow_draped_*` layers) but are a *drape* of the flat
+  outline onto the DEM, not a true ray-vs-terrain intersection — labelled as such;
+  flat is the fallback when no grid is present.
+- **Honesty surfaced to the user**: notes ride back on the `X-SiteGrab-Notes`
+  header and render in the UI — sun precise, shadows inherit the type-driven
+  height estimate (never a daylight/rights-of-light tool), the free-tier caster
+  cap and any skipped low-sun positions are reported, never silent.
+
+## Memory (free-tier safety)
+
+The analysis build is lighter than the v6 combined build: it fetches buildings
+only (lean query), no terrain surface/solids/detailed linework. Measured peak
+working set (Windows high-water, the conservative proxy for the container limit):
+
+| site | buildings | casters (cap 6000) | shadows | peak WS | file |
+|---|---|---|---|---|---|
+| Clifton (draped on) | 4671 | 4671 (uncapped) | 36k (flat+draped) | 360 MB | 15.0 MB |
+| Shoreditch (flat) | 13023 | 6000 (7023 capped) | 36k | 344 MB | 15.5 MB |
+
+Both well under 512 MB. The cap is set by **file size**, not memory — at 6000
+casters there is large headroom, so typical neighbourhood sites cast fully and
+only a true megasite caps (and reports it). Uncapped full shadows are a clean
+Pro-tier feature on the 2 GB tier.
+
+## B. Conjecture-refutation cycle (standing method)
+
+### 1. Problems in the current theory
+
+- **P1 (the product).** "Wouldn't pay for geometry" makes geometry table stakes;
+  value — and the paywall — must live in analysis. One indicative sun study will
+  not convert on its own: Ladybug/Forma own rigorous solar and are free to
+  students.
+- **P2 (Sun Path's honesty ceiling).** Shadow *length* scales with height, and
+  most OSM heights are estimates — so Sun Path is an early-design/communication
+  aid, never an engineering daylight tool. Its paid value can only be alignment +
+  one-click speed + (later) a credible data basis, not rigour we don't have.
+- **P3 (big sites get least, again).** The shadow caster cap means a megasite's
+  shadows are partial (Shoreditch: 7023 of 13023 omitted) — the same v6 pattern
+  (the most impressive exports are the most degraded). Reported, but real.
+- **P4 (solar vs civil time).** Hour marks are in solar time (correct, keyless)
+  but can confuse a user expecting clock time; mapping to civil time needs a
+  timezone database we deliberately avoid.
+- **P5 (the framework is unproven).** Its shape is a *conjecture* until a second
+  module plugs in without touching the runner/endpoint/frontend.
+- **P6 (draped shadows are a drape).** Not a true ray-vs-terrain cast — a known
+  approximation on slopes.
+- **P7.** The equinox gets arcs/points but no shadows (solstices bound the range).
+- **Still open from v6**, re-confirmed: OSM UserText attributes (unshipped — now
+  the strongest *retention* lever), real LiDAR heights (unshipped — now also the
+  honesty fix for shadows), terrace ridges, courtyards, street widths.
+
+### 2-3. Conjectures, criticism, and what was refuted
+
+Conjectures about (a) the next analyses and (b) what converts a free user to a
+paying one. Passing a test is weak; failing is decisive.
+
+- **C1 — Real LiDAR heights (DEFRA/regional DSM-DTM).** SURVIVES, and is now
+  *doubly* motivated: it makes every model height real AND turns Sun Path's
+  shadows from indicative into trustworthy — the link v6 didn't have. It is the
+  feature CadMapper demonstrably *sells*. Falsifier: regional coverage too sparse,
+  or tiles too heavy for 512 MB -> would force the paid 2 GB tier first.
+- **C2 — Sunlight-hours ground heatmap** (how many daylight hours each ground
+  point receives, with building occlusion). SURVIVES to the shortlist: this is the
+  analysis students actually put in a crit/portfolio. Falsifier: it is
+  O(grid x sun-times x buildings) with an occlusion test — a feasibility spike must
+  show it stays inside the free tier, or it is capped to Pro/the 2 GB tier.
+- **C3 — Wind rose / exposure from open climate data.** PROVISIONAL -> leaning
+  REFUTED on free-data grounds: station data (Meteostat) is sparse and not
+  site-granular; ERA5 (CDS) needs an API key, breaking the keyless rule. Parked
+  unless a genuinely free, keyless, site-relevant source appears.
+- **C4 — Viewshed / visibility** from a point over terrain+buildings. SURVIVES:
+  feasible with data we already fetch; real demand in landscape/urban. Weaker
+  monetisation alone than C1/C2.
+- **C5 — Flood/water analysis.** REFUTED on free-data grounds (hydrology isn't in
+  OSM/DEM reliably; jurisdiction-soup), same class as v5's FAR/zoning dead-end.
+- **C6 — Noise mapping.** REFUTED: needs traffic-volume/source models with no free
+  keyless source at usable quality.
+- **C7 — Free geometry, paid analysis (the split).** SURVIVES as the monetisation
+  spine: students pay for analysis *depth/quantity*, not the first taste.
+  Falsifier: a paid waitlist / upgrade test — if nobody upgrades for fuller
+  shadows + heatmap + real heights, the split is refuted and the paywall must move.
+- **C8 — pvlib for precision.** REFUTED for this product (memory cost; precision
+  invisible at massing scale). Recorded so it is not re-litigated.
+
+### 4. Replacement — ranked shortlist for v8
+
+Ranked by (real demand x how unserved-for-free x free-tier feasibility x
+monetisation potential):
+
+1. **Real LiDAR heights (C1).** Compounds geometry *and* makes Sun Path honest;
+   the proven paid feature. Feasibility medium (per-region tiles, memory). **This
+   should be v8** — it is the one upgrade that simultaneously raises the free
+   product's trust and justifies a Pro tier.
+2. **Sunlight-hours heatmap (C2).** The portfolio analysis; v9, or v8 if a
+   feasibility spike clears it and LiDAR's data plumbing slips.
+3. **Viewshed (C4).** Feasible now, good demand, modest standalone monetisation.
+4. **OSM UserText attributes** (carried from v5/v6). Retention, not revenue;
+   cheap; ship alongside whatever wins.
+
+### 5. New problems the survivors will create
+
+- **LiDAR** adds per-region data plumbing and large tiles to a 512 MB box — likely
+  *requires* the paid 2 GB tier (the v6 C4/C5 infra path) and a per-building "real
+  vs estimated" flag so shadows can declare which heights they trust.
+- **Sunlight heatmap** needs a new output type (a ground grid/mesh of values) the
+  representation layer must support, and the same governor discipline as house
+  solids.
+- **The free/Pro split** introduces auth, billing and entitlement — the first
+  non-geometry infrastructure; both the v6 governor line and the analysis-depth
+  line become paywalls to maintain.
+- **The framework grows**: v8's LiDAR almost certainly needs a data source
+  `SiteContext` lacks (DSM/DTM tiles) — extending the contract against a real
+  second module, which is exactly the intended trigger (P5's test), but it means
+  `SiteContext` is no longer minimal.
+
+### Monetisation (sharpened by the real "wouldn't pay for geometry" signal)
+
+- **Free** — all geometry (combined/3D/DXF/terrain) **plus** Sun Path at base
+  depth (arcs + hourly points + one solstice's flat shadows). Enough to prove the
+  analysis is real and aligned.
+- **Pro** — full shadow sets (all times/dates, draped, uncapped on the 2 GB tier),
+  the sunlight-hours heatmap, **real LiDAR heights**, and multiple/stacked
+  analyses. The wedge is *the analysis that goes in the crit*: depth + a credible
+  data basis, not the first taste.
+- **The split is honest only if we don't oversell**: Sun Path is not a substitute
+  for Ladybug/Forma engineering analysis; its paid value is alignment, one-click
+  speed, and (with LiDAR) real heights — stated plainly in the notes.
+- **Precedent holds**: CadMapper bills per-tile for static extracts and *sells*
+  real building heights; SiteGrab's free tier already exceeds the former, and C1
+  targets the latter as the anchor Pro feature.
