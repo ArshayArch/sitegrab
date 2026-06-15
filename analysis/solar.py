@@ -80,6 +80,15 @@ def sun_position(lat: float, lon: float, when_utc: dt.datetime) -> SunSample:
     return SunSample(hour=solar_hour, azimuth=az, altitude=alt)
 
 
+def sun_at(lat: float, lon: float, date: dt.date, solar_hour: float) -> SunSample:
+    """Sun azimuth/altitude at a given LOCAL SOLAR hour on ``date`` at the site.
+
+    The frame the cast-shadow sampler uses (e.g. 09:00, 12:00, 15:00), kept
+    consistent with the hourly arc marks.
+    """
+    return sun_position(lat, lon, _utc_at_solar_hour(date, lon, solar_hour))
+
+
 def key_dates(lat: float, year: int) -> list[tuple[str, str, dt.date]]:
     """Hemisphere-aware (key, label, date) for the three sun-path key dates.
 

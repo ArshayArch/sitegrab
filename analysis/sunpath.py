@@ -76,6 +76,7 @@ class _Built:
     tracks: list[_TrackGeom]
     shadows: list[tuple[str, str, list[list[tuple[float, float, float]]]]] = field(
         default_factory=list)  # (layer_suffix, color_key, polygons)
+    shadow_meta: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +139,10 @@ def build_geometry(
                    convergence_deg=math.degrees(theta),
                    north_end=north_end, tracks=track_geoms)
 
-    # Phase 3 fills built.shadows from ctx.buildings + sampled sun positions.
+    # Cast shadows from ctx.buildings at the sampled sun positions.
     from .shadows import cast_shadows  # local import: representation-only dep
-    built.shadows = cast_shadows(ctx, tracks, params, centre, radius, theta)
+    built.shadows, built.shadow_meta = cast_shadows(
+        ctx, tracks, params, centre, radius, theta)
     return built
 
 
@@ -343,6 +345,7 @@ class SunPath:
                            "day_length_h": round(t.day_length_h, 1)}
                           for t in tracks],
             "buildings": len(ctx.buildings or []),
+            **built.shadow_meta,
             **counts,
         }
         return AnalysisResult(files=files, stats=stats, notes=notes)
@@ -367,6 +370,35 @@ def _notes(ctx: SiteContext, built: _Built, tracks: list[DayTrack],
         "meridian; this differs from clock time by the timezone offset and the "
         "equation of time.",
     ]
+    meta = built.shadow_meta
+    if meta.get("shadow_casters"):
+        notes.append(
+            "Cast shadows are real projections of the buildings, but shadow "
+            "LENGTH scales with building height — and OSM lacks real heights for "
+            "most buildings, so those lengths inherit the model's type-driven "
+            "height ESTIMATE (see MASSING_NOTES.md). Treat shadow extents as "
+            "indicative, not as a rights-of-light or daylight assessment.")
+        notes.append(
+            "Shadows are cast on the summer and winter solstices (the extremes "
+            "that bound the year) at the chosen times, flat on the ground plane. "
+            "Flat projection is exact for rectangular footprints and slightly "
+            "over-estimates concave/L-shaped plans.")
+        if meta.get("shadow_skipped_capped"):
+            notes.append(
+                f"Free-tier cap: shadows were cast for the tallest "
+                f"{meta['shadow_building_cap']} buildings (the dominant casters); "
+                f"{meta['shadow_skipped_capped']} smaller buildings were omitted "
+                f"to keep the file and memory within the free tier.")
+        if meta.get("draped"):
+            notes.append(
+                "Terrain-draped shadows (SUN/shadow_draped_*) lift the flat "
+                "outline onto the DEM — a drape of the flat shadow, not a true "
+                "ray-vs-terrain intersection; read them as approximate on slopes.")
+        if meta.get("shadow_positions_skipped_low_sun"):
+            notes.append(
+                f"{meta['shadow_positions_skipped_low_sun']} requested shadow "
+                f"time(s) had the sun below {3}° and were skipped (near-horizon "
+                f"sun casts effectively unbounded shadows).")
     return notes
 
 
