@@ -71,6 +71,14 @@ class GenerateRequest(BaseModel):
     )
 
 
+class AnalysisRequest(BaseModel):
+    analysis: str = Field(..., description="Analysis key, e.g. 'sun_path'")
+    area: str | None = Field(None, description="Area name (name-search path)")
+    bbox: BBox | None = Field(None, description="Explicit bounding box (preferred)")
+    formats: list[str] = Field(..., description="Any of the analysis's outputs")
+    params: dict = Field(default_factory=dict, description="Analysis parameters")
+
+
 class BriefRequest(BaseModel):
     area: str = Field(..., min_length=1, description="Area name, e.g. 'Dubai Marina'")
     display_name: str = Field(
@@ -184,6 +192,75 @@ def generate(req: GenerateRequest):
         filename=f"{slug}_sitegrab.zip",
         background=BackgroundTask(_cleanup, tmpdir),
     )
+
+
+@app.get("/analyses")
+def analyses() -> dict:
+    """List the available site analyses (the frontend's selectable menu)."""
+    import analysis
+
+    return {"analyses": [spec.to_public() for spec in analysis.list_specs()]}
+
+
+@app.post("/analysis")
+def analysis_run(req: AnalysisRequest):
+    """Run one site-analysis module and stream back its .3dm and/or .dxf."""
+    import analysis
+    from analysis.runner import run_analysis
+
+    bbox: tuple[float, float, float, float] | None = None
+    if req.bbox is not None:
+        bbox = (req.bbox.south, req.bbox.west, req.bbox.north, req.bbox.east)
+        slug = "custom_area"
+    elif req.area:
+        slug = _slugify(req.area)
+    else:
+        raise HTTPException(
+            status_code=422, detail="Provide either an area name or a bounding box.")
+
+    tmpdir = tempfile.mkdtemp(prefix="sitegrab_analysis_")
+    try:
+        result = run_analysis(
+            req.analysis, req.area, bbox, req.params, req.formats, tmpdir)
+    except ValueError as ex:
+        _cleanup(tmpdir)
+        # Unknown analysis / bad format / geocode miss -> bad request or 404.
+        raise HTTPException(status_code=422 if bbox else 404, detail=str(ex))
+    except RuntimeError as ex:
+        _cleanup(tmpdir)
+        raise HTTPException(status_code=503, detail=str(ex))
+    except Exception as ex:  # noqa: BLE001
+        _cleanup(tmpdir)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {ex}")
+
+    produced = result.files
+    if not produced:
+        _cleanup(tmpdir)
+        raise HTTPException(status_code=500, detail="Analysis produced no output.")
+
+    # Surface the honesty notes + headline stats to the browser via headers
+    # (the body is the file). URL-encoded UTF-8 so non-ASCII (°, —) is header-safe.
+    import json
+    import urllib.parse as _ul
+    headers = {
+        "X-SiteGrab-Notes": _ul.quote(json.dumps(result.notes, ensure_ascii=False)),
+        "X-SiteGrab-Stats": _ul.quote(json.dumps(result.stats, default=str)),
+        "Access-Control-Expose-Headers": "X-SiteGrab-Notes, X-SiteGrab-Stats",
+    }
+
+    if len(produced) == 1:
+        path, name = produced[0]
+        media = "application/octet-stream" if name.endswith(".3dm") else "image/vnd.dxf"
+        return FileResponse(path, media_type=media, filename=name, headers=headers,
+                            background=BackgroundTask(_cleanup, tmpdir))
+
+    zip_path = os.path.join(tmpdir, f"{slug}_{req.analysis}.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path, name in produced:
+            zf.write(path, arcname=name)
+    return FileResponse(zip_path, media_type="application/zip",
+                        filename=f"{slug}_{req.analysis}.zip", headers=headers,
+                        background=BackgroundTask(_cleanup, tmpdir))
 
 
 @app.post("/brief")

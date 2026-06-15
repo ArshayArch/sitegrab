@@ -310,6 +310,41 @@
   .brief-actions { display: flex; gap: 6px; align-items: center; }
   .brief-actions .sep { color: var(--line-strong); }
 
+  /* ---- site analysis ---- */
+  .analysis-intro { margin: 0 0 16px; color: var(--muted); font-size: 0.92rem; }
+  .analysis-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ana-chip {
+    appearance: none; cursor: pointer; font-family: var(--sans); font-size: 0.92rem; font-weight: 600;
+    color: var(--ink); background: var(--card); border: 1px solid var(--line-strong);
+    border-radius: 999px; padding: 8px 16px; transition: background .15s, border-color .15s, color .15s;
+  }
+  .ana-chip:hover { border-color: var(--accent); }
+  .ana-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+  .analysis-summary { margin: 18px 0 6px; font-size: 0.98rem; }
+  .analysis-source {
+    margin: 0; font-size: 0.8rem; color: var(--muted); font-family: var(--mono);
+    line-height: 1.6; border-left: 2px solid var(--line-strong); padding-left: 10px;
+  }
+  .param-group { margin-top: 18px; }
+  .param-group > .label { margin-bottom: 8px; }
+  .param-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .param-chip {
+    cursor: pointer; user-select: none; font-size: 0.85rem; font-family: var(--mono);
+    color: var(--muted); background: var(--paper); border: 1px solid var(--line-strong);
+    border-radius: var(--radius); padding: 6px 11px; transition: all .12s;
+  }
+  .param-chip.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .param-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 16px;
+    font-size: 0.88rem; cursor: pointer; user-select: none; }
+  .param-toggle input { accent-color: var(--accent); width: 15px; height: 15px; margin: 2px 0 0; }
+  .param-toggle .pt-note { display: block; color: var(--muted); font-size: 0.78rem; }
+  .analysis-notes { margin-top: 14px; display: grid; gap: 8px; }
+  .analysis-notes .note {
+    font-size: 0.82rem; color: var(--muted); line-height: 1.55;
+    border-left: 3px solid var(--line-strong); padding: 2px 0 2px 11px;
+  }
+  .analysis-notes .note.key { border-left-color: var(--accent); color: var(--ink); }
+
   /* ---- footer ---- */
   footer {
     margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line);
@@ -414,6 +449,42 @@
       <div class="brief-actions" id="briefActions"></div>
     </div>
     <div class="brief-body" id="briefBody"></div>
+  </section>
+
+  <!-- ====================== SITE ANALYSIS ====================== -->
+  <section class="block" id="analysisSection">
+    <div class="section-head">
+      <h2>Site Analysis</h2>
+      <span class="rec-dot" style="font-family:var(--mono);font-size:.55rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)">New</span>
+    </div>
+    <div class="card">
+      <p class="analysis-intro">Run an analysis on the site you've chosen above
+        (the drawn box or the area name). Outputs align with the combined model in
+        the same UTM coordinates — drop them straight onto it.</p>
+      <div class="analysis-list" id="analysisList">
+        <span class="hint" style="color:var(--faint);font-size:.9rem">Loading analyses…</span>
+      </div>
+
+      <div id="analysisDetail" hidden>
+        <p class="analysis-summary" id="analysisSummary"></p>
+        <p class="analysis-source" id="analysisSource"></p>
+
+        <div id="analysisParams"></div>
+
+        <label class="label" style="margin-top:18px">Output format</label>
+        <div class="formats" id="analysisFormats"></div>
+
+        <button class="generate" id="analyzeBtn">Generate analysis</button>
+        <div class="status" id="analysisStatus"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- analysis downloads -->
+  <section class="block" id="analysisResultsSection" hidden>
+    <div class="section-head"><h2>Analysis Files</h2></div>
+    <div class="downloads" id="analysisDownloads"></div>
+    <div class="analysis-notes" id="analysisNotes"></div>
   </section>
 
   <footer>
@@ -828,6 +899,10 @@
     resultsSection.hidden = true;
     briefSection.hidden = true;
     downloads.innerHTML = "";
+    revokeAnalysis();
+    analysisResultsSection.hidden = true;
+    analysisDownloads.innerHTML = "";
+    analysisNotes.innerHTML = "";
     stopLoading();
     if (activeTab === "name") areaInput.focus();
   }
@@ -898,7 +973,196 @@
   genBtn.addEventListener("click", run);
   areaInput.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
 
-  window.addEventListener("beforeunload", revokeAll);
+  // ========================================================================
+  //  SITE ANALYSIS  (data-driven from /analyses; Sun Path is the first module)
+  // ========================================================================
+  const analysisList = $("analysisList"), analysisDetail = $("analysisDetail");
+  const analysisSummary = $("analysisSummary"), analysisSource = $("analysisSource");
+  const analysisParamsEl = $("analysisParams"), analysisFormatsEl = $("analysisFormats");
+  const analyzeBtn = $("analyzeBtn"), analysisStatusEl = $("analysisStatus");
+  const analysisResultsSection = $("analysisResultsSection");
+  const analysisDownloads = $("analysisDownloads"), analysisNotes = $("analysisNotes");
+
+  const DATE_LABELS = { summer_solstice: "Summer solstice", equinox: "Equinox", winter_solstice: "Winter solstice" };
+  let analyses = [], currentAnalysis = null;
+  let analysisParamState = {}, analysisFmtState = [];
+  let analysisBlobUrls = [], analysisBusy = false;
+
+  // Shared site resolver, used by the analysis flow (mirrors run()).
+  function resolveSource() {
+    if (activeTab === "map") {
+      if (!drawnBounds) return { error: "Draw a rectangle on the map above to set your site." };
+      const b = drawnBounds, c = b.getCenter();
+      return { kind: "bbox", label: lastSearchLabel,
+        bbox: { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() },
+        center: { lat: c.lat, lng: c.lng } };
+    }
+    const area = areaInput.value.trim();
+    if (!area) return { error: "Enter an area name above to set your site." };
+    return { kind: "name", area, label: area };
+  }
+
+  async function loadAnalyses() {
+    try {
+      const r = await fetch("/analyses");
+      if (!r.ok) throw new Error("unavailable");
+      analyses = (await r.json()).analyses || [];
+    } catch (e) { analyses = []; }
+    renderAnalysisList();
+  }
+  function renderAnalysisList() {
+    if (!analyses.length) {
+      analysisList.innerHTML = '<span class="hint" style="color:var(--faint);font-size:.9rem">Site analysis is unavailable right now.</span>';
+      return;
+    }
+    analysisList.innerHTML = "";
+    analyses.forEach((a) => {
+      const b = document.createElement("button");
+      b.className = "ana-chip"; b.type = "button"; b.textContent = a.name;
+      b.addEventListener("click", () => selectAnalysis(a.key));
+      analysisList.appendChild(b);
+    });
+    selectAnalysis(analyses[0].key);
+  }
+  function selectAnalysis(key) {
+    currentAnalysis = analyses.find((a) => a.key === key);
+    if (!currentAnalysis) return;
+    [...analysisList.children].forEach((c) =>
+      c.classList.toggle("active", c.textContent === currentAnalysis.name));
+    analysisDetail.hidden = false;
+    analysisSummary.textContent = currentAnalysis.summary;
+    analysisSource.textContent = "Data — " + currentAnalysis.data_source;
+    renderParams(currentAnalysis);
+    renderAnalysisFormats(currentAnalysis);
+  }
+  function chipLabel(name, val) {
+    if (name === "date_set") return DATE_LABELS[val] || val;
+    return val;
+  }
+  function renderParams(a) {
+    analysisParamsEl.innerHTML = "";
+    analysisParamState = {};
+    a.params.forEach((p) => {
+      analysisParamState[p.name] = Array.isArray(p.default) ? [...p.default] : p.default;
+      const g = document.createElement("div"); g.className = "param-group";
+      if (p.kind === "multichoice" || p.kind === "choice") {
+        g.innerHTML = '<span class="label">' + p.label + "</span>";
+        const wrap = document.createElement("div"); wrap.className = "param-chips";
+        p.choices.forEach((ch) => {
+          const c = document.createElement("span"); c.className = "param-chip"; c.textContent = chipLabel(p.name, ch);
+          if (analysisParamState[p.name].includes(ch)) c.classList.add("on");
+          c.addEventListener("click", () => {
+            const arr = analysisParamState[p.name], i = arr.indexOf(ch);
+            if (p.kind === "choice") { analysisParamState[p.name] = [ch];
+              [...wrap.children].forEach((x) => x.classList.toggle("on", x === c)); return; }
+            if (i >= 0) { arr.splice(i, 1); c.classList.remove("on"); }
+            else { arr.push(ch); c.classList.add("on"); }
+          });
+          wrap.appendChild(c);
+        });
+        g.appendChild(wrap);
+      } else if (p.kind === "bool") {
+        const lbl = document.createElement("label"); lbl.className = "param-toggle";
+        lbl.innerHTML = '<input type="checkbox"><span>' + p.label + "</span>";
+        const cb = lbl.querySelector("input"); cb.checked = !!p.default;
+        analysisParamState[p.name] = !!p.default;
+        cb.addEventListener("change", () => { analysisParamState[p.name] = cb.checked; });
+        g.appendChild(lbl);
+      }
+      analysisParamsEl.appendChild(g);
+    });
+  }
+  function renderAnalysisFormats(a) {
+    analysisFormatsEl.className = "param-chips";
+    analysisFormatsEl.innerHTML = "";
+    analysisFmtState = [...a.outputs];
+    a.outputs.forEach((f) => {
+      const c = document.createElement("span"); c.className = "param-chip on"; c.textContent = f.toUpperCase();
+      c.addEventListener("click", () => {
+        const i = analysisFmtState.indexOf(f);
+        if (i >= 0 && analysisFmtState.length > 1) { analysisFmtState.splice(i, 1); c.classList.remove("on"); }
+        else if (i < 0) { analysisFmtState.push(f); c.classList.add("on"); }
+      });
+      analysisFormatsEl.appendChild(c);
+    });
+  }
+
+  // ---- analysis status ----
+  let anaTimer = null;
+  const ANA_MSGS = ["Resolving the site…", "Fetching building footprints…",
+    "Computing sun positions…", "Casting shadows…", "Writing aligned files…",
+    "Larger sites take a moment…"];
+  function startAnaLoading() {
+    let i = 0; analysisStatusEl.className = "status show";
+    analysisStatusEl.innerHTML = '<span class="spinner"></span><span id="anamsg">' + ANA_MSGS[0] + "</span>";
+    anaTimer = setInterval(() => { i = (i + 1) % ANA_MSGS.length; const m = $("anamsg"); if (m) m.textContent = ANA_MSGS[i]; }, 2600);
+  }
+  function stopAnaLoading() { if (anaTimer) { clearInterval(anaTimer); anaTimer = null; } analysisStatusEl.className = "status"; analysisStatusEl.innerHTML = ""; }
+  function showAnaError(msg) { stopAnaLoading(); analysisStatusEl.className = "status show error"; analysisStatusEl.textContent = "⚠  " + msg; }
+
+  function renderAnaNotes(resp) {
+    analysisNotes.innerHTML = "";
+    let notes = [];
+    try { const h = resp.headers.get("X-SiteGrab-Notes"); if (h) notes = JSON.parse(decodeURIComponent(h)); } catch (_) {}
+    notes.forEach((n, i) => {
+      const d = document.createElement("div"); d.className = "note" + (i === 0 ? " key" : ""); d.textContent = n;
+      analysisNotes.appendChild(d);
+    });
+  }
+
+  async function analyze() {
+    if (analysisBusy || !currentAnalysis) return;
+    const src = resolveSource();
+    if (src.error) { showAnaError(src.error); return; }
+    if (!analysisFmtState.length) { showAnaError("Pick at least one output format."); return; }
+
+    analysisBusy = true; analyzeBtn.disabled = true; startAnaLoading();
+    const params = {};
+    currentAnalysis.params.forEach((p) => { params[p.name] = analysisParamState[p.name]; });
+    const base = src.kind === "bbox" ? { bbox: src.bbox } : { area: src.area };
+    const payload = Object.assign({ analysis: currentAnalysis.key, formats: analysisFmtState, params }, base);
+
+    analysisResultsSection.hidden = false;
+    analysisDownloads.innerHTML = ""; analysisNotes.innerHTML = "";
+    const both = analysisFmtState.length > 1;
+    const ext = both ? "ZIP" : analysisFmtState[0].toUpperCase();
+    const card = document.createElement("div"); card.className = "dl pending";
+    card.innerHTML = '<div class="ext">' + ext + '</div><div class="meta"><div class="name">' +
+      currentAnalysis.name + '</div><div class="desc">running…</div></div><a class="btn">Download</a>';
+    analysisDownloads.appendChild(card);
+
+    try {
+      const resp = await fetch("/analysis", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        let msg = "HTTP " + resp.status;
+        try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
+        card.className = "dl failed"; card.querySelector(".desc").textContent = msg;
+        const b = card.querySelector("a.btn"); if (b) b.remove();
+        showAnaError(msg); analysisBusy = false; analyzeBtn.disabled = false; return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob); analysisBlobUrls.push(url);
+      const fname = filenameFrom(resp, currentAnalysis.key + "." + (both ? "zip" : analysisFmtState[0]));
+      card.className = "dl";
+      card.querySelector(".name").textContent = fname;
+      card.querySelector(".desc").textContent = (both ? "3DM + DXF bundle" : ext + " file") + "  ·  " + prettySize(blob.size);
+      const a = card.querySelector("a.btn"); a.href = url; a.download = fname;
+      renderAnaNotes(resp);
+    } catch (e) {
+      card.className = "dl failed"; card.querySelector(".desc").textContent = "Network error";
+      const b = card.querySelector("a.btn"); if (b) b.remove();
+      showAnaError("Network error while running the analysis.");
+    }
+    stopAnaLoading(); analysisBusy = false; analyzeBtn.disabled = false;
+  }
+  analyzeBtn.addEventListener("click", analyze);
+
+  function revokeAnalysis() { analysisBlobUrls.forEach((u) => URL.revokeObjectURL(u)); analysisBlobUrls = []; }
+
+  window.addEventListener("beforeunload", () => { revokeAll(); revokeAnalysis(); });
 
   // ---- boot ----
   if (window.L && L.map) {
@@ -911,6 +1175,7 @@
       '<p style="color:var(--muted);font-size:0.9rem">The map could not be loaded. ' +
       'Use “Search by name” instead.</p>';
   }
+  loadAnalyses();
 })();
 </script>
 </body>
