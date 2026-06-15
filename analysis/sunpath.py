@@ -55,7 +55,6 @@ SHADOW_DRAPED_COLOR = (110, 96, 120)
 # Dome radius: enclose the site corners so the arcs sweep over the model.
 ARC_RADIUS_DIAG_FRAC = 0.55
 ARC_RADIUS_MIN_M = 150.0
-HOUR_DOT_PREFIX = ""  # TextDots already read as labels; keep them terse
 
 
 @dataclass
@@ -397,7 +396,7 @@ def _notes(ctx: SiteContext, built: _Built, tracks: list[DayTrack],
         if meta.get("shadow_positions_skipped_low_sun"):
             notes.append(
                 f"{meta['shadow_positions_skipped_low_sun']} requested shadow "
-                f"time(s) had the sun below {3}° and were skipped (near-horizon "
+                f"time(s) had the sun below 3° and were skipped (near-horizon "
                 f"sun casts effectively unbounded shadows).")
     return notes
 
