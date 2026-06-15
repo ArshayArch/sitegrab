@@ -22,9 +22,8 @@ from .framework import (
     register,
 )
 
-# Modules self-register on import. Sun Path is wired in in Phase 2, once its
-# geometry is runnable:
-# from . import sunpath  # noqa: F401  (imported for the registration side effect)
+# Modules self-register on import.
+from . import sunpath  # noqa: E402,F401  (imported for the registration side effect)
 
 __all__ = [
     "AnalysisResult", "AnalysisSpec", "Building", "Param", "SiteContext",
