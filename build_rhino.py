@@ -123,6 +123,66 @@ def building_height(
 
 
 # ---------------------------------------------------------------------------
+# v9 — real heights from LiDAR, resolved PER BUILDING with a sanity check.
+# Priority: a real OSM tag (surveyed/declared) > sanity-passed LiDAR (surveyed
+# measurement) > the type/footprint estimate (legibility guess). The point of
+# the sanity check is to TRUST LiDAR when it is clearly good and REJECT it when
+# it is missing or obviously wrong (a tree spike over a shed, a noise value),
+# never to blindly believe a raster. See fetch_lidar.py and HEIGHTS_PROVENANCE.
+# ---------------------------------------------------------------------------
+
+# Provenance tags returned by resolve_height (and used for the layer split).
+PROV_OSM = "osm"            # real OSM height/levels tag
+PROV_LIDAR = "lidar"        # sanity-passed LiDAR measurement
+PROV_ESTIMATED = "estimated"  # type/footprint estimate (no trustworthy data)
+
+LIDAR_MIN_H = 2.0           # below this is not a standing building (demolished,
+#                             under construction at fly time, or ground noise)
+LIDAR_MAX_H = 280.0         # taller than all but a handful of UK buildings;
+#                             beyond this a single pixel is almost surely noise
+LIDAR_MAX_SLENDER = 10.0    # height / sqrt(footprint area): reject absurdly thin
+#                             readings (a 40 m^2 plot "reading" 80 m)
+# A tall reading on a tiny footprint is a tree/aerial spike, not a tower: a real
+# 25 m+ building has a footprint bigger than a garden shed.
+LIDAR_TALL_H = 25.0
+LIDAR_TALL_MIN_AREA = 50.0
+
+
+def _lidar_is_sane(h: float, area: float) -> bool:
+    """Common-sense gate on a LiDAR-derived height before we trust it."""
+    if h < LIDAR_MIN_H or h > LIDAR_MAX_H:
+        return False
+    if h > LIDAR_MAX_SLENDER * math.sqrt(max(area, 1.0)):
+        return False
+    if h > LIDAR_TALL_H and area < LIDAR_TALL_MIN_AREA:
+        return False
+    return True
+
+
+def resolve_height(
+    tags: dict[str, str],
+    pts_xy: list[tuple[float, float]],
+    osm_id: int,
+    lidar_h: float | None,
+) -> tuple[float, str]:
+    """Height in metres + provenance, resolving OSM tag > LiDAR > estimate.
+
+    ``lidar_h`` is the per-footprint LiDAR sample (or None where coverage is
+    absent/too sparse — see :meth:`fetch_lidar.LidarHeights.height_for`). A real
+    OSM tag still wins unconditionally (never regress v5). A LiDAR value is used
+    only if it passes :func:`_lidar_is_sane`; otherwise we fall back to the
+    type/footprint estimate, exactly as before LiDAR existed.
+    """
+    real = _real_height(tags)
+    if real is not None:
+        return real, PROV_OSM
+    area = _footprint_area_m2(pts_xy)
+    if lidar_h is not None and _lidar_is_sane(lidar_h, area):
+        return lidar_h, PROV_LIDAR
+    return _jitter(_estimate_height(tags.get("building", "yes"), area), osm_id), PROV_ESTIMATED
+
+
+# ---------------------------------------------------------------------------
 # Pitched roofs: clearly-residential houses ONLY (see MASSING_NOTES.md §3).
 # A cheap generalised hip — ridge along the footprint's principal axis, each
 # eaves edge roofed to its projection on the ridge. No per-building roof

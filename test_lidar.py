@@ -71,3 +71,45 @@ def test_height_for_outside_window() -> None:
     lid._tf = type("I", (), {"transform": staticmethod(lambda x, y: (x, y))})()
     h, n = lid.height_for([(50, 50), (60, 50), (60, 60), (50, 60)])
     assert h is None
+
+
+# --- the per-building resolver + sanity check (build_rhino.resolve_height) -----
+import build_rhino as rh  # noqa: E402
+
+# A ~10x10 m (100 m^2) square footprint in metres.
+_SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+
+
+def test_resolve_osm_tag_always_wins() -> None:
+    # A real OSM height beats any LiDAR value (never regress v5).
+    h, p = rh.resolve_height({"building": "yes", "height": "30"}, _SQUARE, 1, 5.0)
+    assert p == rh.PROV_OSM and h == 30.0
+
+
+def test_resolve_uses_sane_lidar_over_estimate() -> None:
+    h, p = rh.resolve_height({"building": "yes"}, _SQUARE, 1, 9.4)
+    assert p == rh.PROV_LIDAR and h == 9.4
+
+
+def test_resolve_rejects_too_low_lidar() -> None:
+    h, p = rh.resolve_height({"building": "house"}, _SQUARE, 1, 0.4)
+    assert p == rh.PROV_ESTIMATED       # 0.4 m is not a standing building
+
+
+def test_resolve_rejects_slender_lidar() -> None:
+    # 80 m on a 40 m^2 footprint: slenderness 80/6.3 = 12.7 -> rejected.
+    tiny = [(0.0, 0.0), (6.3, 0.0), (6.3, 6.3), (0.0, 6.3)]
+    h, p = rh.resolve_height({"building": "yes"}, tiny, 1, 80.0)
+    assert p == rh.PROV_ESTIMATED
+
+
+def test_resolve_rejects_tall_on_tiny_footprint() -> None:
+    # 30 m reading on a 36 m^2 shed footprint = a tree/aerial, not a tower.
+    shed = [(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)]
+    h, p = rh.resolve_height({"building": "shed"}, shed, 1, 30.0)
+    assert p == rh.PROV_ESTIMATED
+
+
+def test_resolve_none_lidar_falls_back() -> None:
+    h, p = rh.resolve_height({"building": "office"}, _SQUARE, 1, None)
+    assert p == rh.PROV_ESTIMATED and h > 0
