@@ -149,7 +149,8 @@ def build_geometry(
 # Writers.
 # ---------------------------------------------------------------------------
 def _layer(model: rhino3dm.File3dm, name: str, parent: uuid.UUID | None,
-           rgb: tuple[int, int, int], cache: dict[str, int]) -> int:
+           rgb: tuple[int, int, int], cache: dict[str, int],
+           visible: bool = True) -> int:
     if name in cache:
         return cache[name]
     lay = rhino3dm.Layer()
@@ -158,6 +159,9 @@ def _layer(model: rhino3dm.File3dm, name: str, parent: uuid.UUID | None,
     if parent is not None:
         lay.ParentLayerId = parent
     lay.Color = (*rgb, 255)
+    # Shadow layers ship HIDDEN so a freshly opened file reads cleanly (arcs +
+    # points only); the user switches on the single hour they want to study.
+    lay.Visible = visible
     cache[name] = model.Layers.Add(lay)
     return cache[name]
 
@@ -205,10 +209,12 @@ def write_3dm(path: str, built: _Built) -> dict[str, int]:
                                      _attrs(pt_idx))
             counts["points"] += 1
 
-    # Cast shadows (Phase 3) — closed ground polygons.
+    # Cast shadows — each sun MOMENT on its OWN layer, all hidden by default
+    # (the v8 fix: stacking every moment visible made an unreadable tangle).
     for suffix, color_key, polygons in built.shadows:
         rgb = SHADOW_DRAPED_COLOR if suffix.startswith("draped") else SHADOW_COLOR
-        s_idx = _layer(model, f"shadow_{suffix}", parent.Id, rgb, cache)
+        s_idx = _layer(model, f"shadow_{suffix}", parent.Id, rgb, cache,
+                       visible=False)
         for poly in polygons:
             curve = _polyline_curve(poly + poly[:1])  # close it
             if curve is not None:
@@ -236,9 +242,14 @@ def write_dxf(path: str, built: _Built) -> dict[str, int]:
     doc.units = ezdxf.units.M
     msp = doc.modelspace()
 
-    def ensure(name: str, aci: int) -> None:
+    def ensure(name: str, aci: int, visible: bool = True) -> None:
         if name not in doc.layers:
-            doc.layers.add(name=name, color=aci)
+            lay = doc.layers.add(name=name, color=aci)
+            # Shadow layers ship OFF + FROZEN so the file opens to a clean plan
+            # (arcs + points); the user thaws the single hour they want to read.
+            if not visible:
+                lay.off()
+                lay.freeze()
 
     label_h = max(1.5, built.radius * 0.012)
     counts = {"arcs": 0, "points": 0, "shadows": 0}
@@ -262,7 +273,7 @@ def write_dxf(path: str, built: _Built) -> dict[str, int]:
 
     for suffix, color_key, polygons in built.shadows:
         layer = f"SUN_shadow_{suffix}"
-        ensure(layer, 251 if suffix.startswith("draped") else 8)
+        ensure(layer, 251 if suffix.startswith("draped") else 8, visible=False)
         for poly in polygons:
             if len(poly) >= 3:
                 pl = msp.add_lwpolyline([(x, y) for x, y, _ in poly],
@@ -382,6 +393,12 @@ def _notes(ctx: SiteContext, built: _Built, tracks: list[DayTrack],
             "that bound the year) at the chosen times, flat on the ground plane. "
             "Flat projection is exact for rectangular footprints and slightly "
             "over-estimates concave/L-shaped plans.")
+        notes.append(
+            "WORKFLOW: every shadow moment is on its OWN layer (e.g. "
+            "SUN/shadow_summer_1200) and ALL shadow layers open HIDDEN, so the "
+            "file reads cleanly — just arcs and hourly points. Switch ON the one "
+            "hour you want to study to see a single, uncluttered shadow set; "
+            "never turn them all on at once (that is the tangle this avoids).")
         if meta.get("shadow_skipped_capped"):
             notes.append(
                 f"Free-tier cap: shadows were cast for the tallest "
