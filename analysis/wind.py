@@ -668,6 +668,13 @@ def _notes(built: _WindBuilt) -> list[str]:
         f"{built.convergence_deg:+.2f}° (meridian convergence); wind bearings are "
         f"rotated into the grid by it and true north is drawn on WIND/north.")
     notes.append(
+        f"Aligned in the SAME UTM grid as your model (XY is exact — same "
+        f"projection and centroid as the geometry export). In the 3DM the arrows "
+        f"hover {int(ARROW_Z_M)} m above the ground-plane datum for readability; "
+        f"that datum is 0 for the flat model, so on a TERRAIN combined model "
+        f"raise the WIND layers by the site's base elevation to sit them above "
+        f"the ground.")
+    notes.append(
         "Arrows flow across the site FROM the prevailing direction and STOP where "
         "they meet a building facade head-on (a short stub), so blockage vs. "
         "open lanes reads at a glance. The prevailing direction is bold and on by "

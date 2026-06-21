@@ -1089,13 +1089,25 @@
 
   // ---- analysis status ----
   let anaTimer = null;
-  const ANA_MSGS = ["Resolving the site…", "Fetching building footprints…",
-    "Computing sun positions…", "Casting shadows…", "Writing aligned files…",
+  // Per-analysis honest progress messaging (falls back to a generic set).
+  const ANA_MSGS_BY_KEY = {
+    sun_path: ["Resolving the site…", "Fetching building footprints…",
+      "Computing sun positions…", "Casting shadows…", "Writing aligned files…",
+      "Larger sites take a moment…"],
+    wind: ["Resolving the site…", "Fetching building footprints…",
+      "Fetching measured wind climatology (Open-Meteo)…",
+      "Building the wind rose…", "Tracing prevailing arrows + channels…",
+      "Indicative diagram, not a CFD simulation…", "Writing aligned files…"],
+  };
+  const ANA_MSGS_DEFAULT = ["Resolving the site…",
+    "Fetching site data…", "Running the analysis…", "Writing aligned files…",
     "Larger sites take a moment…"];
   function startAnaLoading() {
+    const msgs = (currentAnalysis && ANA_MSGS_BY_KEY[currentAnalysis.key])
+      || ANA_MSGS_DEFAULT;
     let i = 0; analysisStatusEl.className = "status show";
-    analysisStatusEl.innerHTML = '<span class="spinner"></span><span id="anamsg">' + ANA_MSGS[0] + "</span>";
-    anaTimer = setInterval(() => { i = (i + 1) % ANA_MSGS.length; const m = $("anamsg"); if (m) m.textContent = ANA_MSGS[i]; }, 2600);
+    analysisStatusEl.innerHTML = '<span class="spinner"></span><span id="anamsg">' + msgs[0] + "</span>";
+    anaTimer = setInterval(() => { i = (i + 1) % msgs.length; const m = $("anamsg"); if (m) m.textContent = msgs[i]; }, 2600);
   }
   function stopAnaLoading() { if (anaTimer) { clearInterval(anaTimer); anaTimer = null; } analysisStatusEl.className = "status"; analysisStatusEl.innerHTML = ""; }
   function showAnaError(msg) { stopAnaLoading(); analysisStatusEl.className = "status show error"; analysisStatusEl.textContent = "⚠  " + msg; }

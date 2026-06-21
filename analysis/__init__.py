@@ -24,6 +24,7 @@ from .framework import (
 
 # Modules self-register on import.
 from . import sunpath  # noqa: E402,F401  (imported for the registration side effect)
+from . import wind     # noqa: E402,F401  (second module — proves the framework)
 
 __all__ = [
     "AnalysisResult", "AnalysisSpec", "Building", "Param", "SiteContext",
