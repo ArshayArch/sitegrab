@@ -6,8 +6,18 @@ plus the fallback's invariants. Run: ``python test_wind.py``.
 
 from __future__ import annotations
 
+from fetch_core import get_transformer
+
+from analysis.framework import Building, SiteContext
+from analysis.wind import (
+    CHANNEL_MAX_WIDTH_M,
+    _flow_vec,
+    build_geometry,
+)
 from analysis.wind_data import (
+    COMPASS_16,
     SECTORS,
+    WindRose,
     _aggregate,
     _fallback_rose,
     _sector_of,
@@ -55,9 +65,80 @@ def test_fallback_invariants() -> None:
         assert max(r.strength) == 1.0            # normalised
 
 
+# --- representation half (geometry), all synthetic / no network ---------------
+S, W, N, E = 51.50, -0.13, 51.51, -0.11
+
+
+def _forced_rose(direction: str) -> WindRose:
+    freq = [0.0] * SECTORS
+    freq[COMPASS_16.index(direction)] = 1.0
+    return WindRose(labels=COMPASS_16, freq=freq, mean_speed=[8.0] * SECTORS,
+                    max_speed=[12.0] * SECTORS, calm_fraction=0.0, hours=1,
+                    source="synthetic", period="test", is_fallback=False)
+
+
+def _ctx(buildings: list[Building]) -> SiteContext:
+    tr, epsg = get_transformer(S, W, N, E)
+    ctx = SiteContext(south=S, west=W, north=N, east=E, transformer=tr,
+                      epsg=epsg, display_name="wind test")
+    ctx.buildings = buildings
+    return ctx
+
+
+def _two_blocks(slot_m: float) -> list[Building]:
+    tr, _ = get_transformer(S, W, N, E)
+    cx, cy = tr.transform((W + E) / 2, (S + N) / 2)
+    h = slot_m / 2
+    north = [(cx - 60, cy + h), (cx + 60, cy + h),
+             (cx + 60, cy + h + 40), (cx - 60, cy + h + 40)]
+    south = [(cx - 60, cy - h - 40), (cx + 60, cy - h - 40),
+             (cx + 60, cy - h), (cx - 60, cy - h)]
+    return [Building(north, 20.0, 0.0, True), Building(south, 20.0, 0.0, True)]
+
+
+def test_channel_flagged_in_narrow_slot() -> None:
+    built = build_geometry(_ctx(_two_blocks(10.0)), _forced_rose("W"),
+                           {"show_secondary": False})
+    assert built.meta["prevailing_dir"] == "W"
+    assert built.meta["channels"] >= 1, "narrow slot not flagged as a channel"
+
+
+def test_no_channel_when_gap_too_wide() -> None:
+    # A gap far wider than CHANNEL_MAX_WIDTH_M is a plaza, not a funnel.
+    built = build_geometry(_ctx(_two_blocks(CHANNEL_MAX_WIDTH_M + 40)),
+                           _forced_rose("W"), {"show_secondary": False})
+    assert built.meta["channels"] == 0, "an over-wide gap was wrongly channelled"
+
+
+def test_arrow_stops_at_facade() -> None:
+    # One solid block dead-centre; a west wind's arrows must not punch through to
+    # the far (east) side — every prevailing arrow ends at/short of the east wall.
+    tr, _ = get_transformer(S, W, N, E)
+    cx, cy = tr.transform((W + E) / 2, (S + N) / 2)
+    block = [(cx - 50, cy - 50), (cx + 50, cy - 50),
+             (cx + 50, cy + 50), (cx - 50, cy + 50)]
+    built = build_geometry(_ctx([Building(block, 30.0, 0.0, True)]),
+                           _forced_rose("W"), {"show_secondary": False})
+    fx, fy = _flow_vec(COMPASS_16.index("W") * 22.5, 0.0)  # ~ +x (eastward)
+    blocked = 0
+    for ar in built.arrows:
+        if ar.layer != "arrows_prevailing":
+            continue
+        sx, sy, _ = ar.pts[0]
+        ex, ey, _ = ar.pts[1]
+        # Arrows seeded within the block's N-S span must stop before the east wall.
+        if cy - 50 < sy < cy + 50 and sx < cx - 50:
+            assert ex <= cx - 50 + 2.0, "arrow passed through a solid facade"
+            blocked += 1
+    assert blocked > 0, "no arrow tested against the central block"
+
+
 if __name__ == "__main__":
     test_sector_boundaries()
     test_aggregate_frequency_and_calm()
     test_aggregate_skips_nulls()
     test_fallback_invariants()
-    print("all wind-data tests passed")
+    test_channel_flagged_in_narrow_slot()
+    test_no_channel_when_gap_too_wide()
+    test_arrow_stops_at_facade()
+    print("all wind tests passed")
