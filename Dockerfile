@@ -28,6 +28,14 @@ print('deps OK', t.transform(55.14, 25.08), 'sun_alt', round(alt, 1))"
 
 COPY . .
 
+# Fail the build early if the analysis package can't import or a module forgot
+# to register. Wind adds NO new dependency (its data layer is stdlib urllib over
+# the keyless Open-Meteo API), so this just guards the registry wiring.
+RUN python -c "import analysis; \
+keys = {s.key for s in analysis.list_specs()}; \
+assert {'sun_path', 'wind'} <= keys, keys; \
+print('analyses OK', sorted(keys))"
+
 EXPOSE 8000
 
 # Render injects $PORT; default to 8000 for local runs. Use shell form so the

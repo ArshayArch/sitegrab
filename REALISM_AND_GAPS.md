@@ -423,3 +423,167 @@ monetisation potential):
 - **Precedent holds**: CadMapper bills per-tile for static extracts and *sells*
   real building heights; SiteGrab's free tier already exceeds the former, and C1
   targets the latter as the anchor Pro feature.
+
+---
+
+# v8 — Wind (the framework's second module; the no-rework proof)
+
+The v7 shortlist ranked **LiDAR heights** first. v8 deliberately took **Wind**
+instead, and the reasoning is the honest part of this version. v7's whole reason
+to exist was the *conjecture* that the analysis framework would take a second
+module without rework (P5). LiDAR is the worst possible first test of that
+conjecture: it almost certainly needs a data source `SiteContext` lacks
+(DSM/DTM tiles) **and** likely the paid 2 GB tier first — so a LiDAR-first v8
+would have changed the contract and the infra in the same step, proving nothing
+about the framework's shape. Wind is the clean test: it needs only data the
+contract already carries (`location` + `buildings`), stays inside the free tier,
+and so isolates the one question v7 asked. LiDAR remains the standout *data* gap
+and the anchor Pro feature; it is now the v9 candidate, to be built once the
+framework is known-good.
+
+## What shipped (the honesty ledger)
+
+- **The framework's P5 test PASSED — decisively.** Wind plugged in by touching
+  `analysis/__init__.py` (one `import`/register line) plus two new module files
+  (`wind_data.py`, `wind.py`). `runner.py`, `framework.py`, **and `main.py` were
+  not touched at all** (verified against the v8 commit range). The only frontend
+  change was 20 lines of *per-analysis progress copy* in `index.html`, with a
+  generic fallback — the menu logic, the param controls and the format toggles
+  stayed fully spec-driven, so a third analysis still needs zero menu work. The
+  contract did **not** have to grow: Wind needed no `SiteContext` field Sun Path
+  hadn't already justified. The v7 conjecture (the framework is the right shape)
+  survived its first real falsification attempt.
+- **C3 (wind) un-refuted on its own terms.** v7 leaned C3 → REFUTED because
+  "station data is sparse and ERA5 (CDS) needs an API key, breaking the keyless
+  rule." That refutation rested on *one assumed access path*. **Open-Meteo's
+  Historical Weather archive serves the same ERA5 reanalysis, keyless and free**,
+  per lat/long, as hourly `wind_speed_10m` + `wind_direction_10m`. The data
+  objection was about the gateway, not the data — so C3 returns, honestly, as a
+  *measured climatology* (not the live/forecast wind the v7 note feared).
+- **Wind DATA** (`wind_data.py`): a MEASURED 16-sector rose aggregated from 3
+  complete calendar years (last whole years, to dodge the archive's few-day lag)
+  — per-sector frequency, mean and max speed, with sub-`0.5 m/s` hours counted as
+  calm and binned to no direction. Stdlib `urllib` only, **no new dependency**.
+  Unit-tested on sector boundaries, frequency/calm aggregation, null-skipping.
+  Verified live: Clifton 26 304 hourly records (2023–2025), prevailing **WSW
+  18.3 %**, mean 5.2 m/s, calm 0.7 %; Shoreditch prevailing **SW 16.0 %**. A
+  latitude-band global-circulation fallback (clearly flagged NOT site-specific)
+  keeps the diagram honest if the API is unreachable, rather than failing blank.
+- **Wind REPRESENTATION** (`wind.py`): an INDICATIVE diagram on `WIND/...` layers
+  in the same UTM as the model — a prevailing-direction arrow field that **stops
+  at building facades** (blockage reads at a glance), secondary directions each
+  on their own hidden layer (toggle like the shadow hours), a corner 16-sector
+  rose, and `WIND/channels` markers where a narrow open corridor (≤30 m) between
+  buildings lines up with the prevailing wind (bolder = narrower). Same true-north
+  basis as Sun Path: meridian convergence measured through the transformer and
+  every bearing rotated into the grid (−0.30° at Clifton).
+- **Honesty surfaced, loudly.** Both the module headers and the user notes state
+  it in capitals: this is a DIAGRAM, **NOT CFD** — no airflow, speed-up, pressure
+  or turbulence is computed; channels are a *geometric suggestion* from prevailing
+  direction + gap width, not a flow solve. The rose is a multi-year average, not
+  live or forecast. The obstacle cap and any fallback are reported, never silent.
+- **Shadows tidy-up rode along** (Phase 1): cast shadows are now one-per-layer and
+  hidden by default, so the analysis layers behave consistently across modules.
+
+## Memory (free-tier safety)
+
+Measured peak working set (Windows high-water via `psutil.peak_wset` — the same
+conservative proxy bench.py uses, includes rhino3dm's C++ heap):
+
+| site | obstacles (cap 4000) | channels | peak WS | 3dm |
+|---|---|---|---|---|
+| Clifton, Bristol | 4000 (+12 042 capped) | 25 | **174.8 MB** | 55 KB |
+| Shoreditch, London | 4000 (+9 024 capped) | 39 | **209.3 MB** | 66 KB |
+
+Both far under 512 MB — lighter than Sun Path (no shadow explosion) and a
+fraction of the geometry build. The obstacle cap is set for *legibility and
+file size*, not memory: arrows/channels off the 4000 largest footprints already
+saturate a readable plan, and the skip count is reported. Uncapped obstacles are
+a clean Pro-tier item on the 2 GB tier. (One Clifton run took 118.9 s wall — that
+was Overpass building-fetch mirror variance, not the wind module; a second run
+on the same code was 13 s.)
+
+## B. Conjecture-refutation cycle (standing method)
+
+### 1. Problems in the current theory
+
+- **P1 (the analysis-vs-CFD honesty line).** Wind's value is alignment + a
+  measured prevailing direction + a legible blockage/channel read. The danger is a
+  user reading the channel markers as a flow result. The notes shout NOT CFD, but
+  the prettier the arrows, the stronger the over-read — a standing communication
+  risk, not a code bug.
+- **P2 (channels are geometry, not flow).** A 30 m corridor aligned with the
+  prevailing wind is *flagged*; whether it actually funnels depends on
+  upstream/downstream geometry, height and approach angle the diagram ignores.
+  Honest as a "look here," dishonest if read as "wind speeds up here."
+- **P3 (the rose is a point climatology).** ERA5 at ~9–25 km resolution is a
+  regional rose dropped on the site; real local wind is modified by exactly the
+  buildings and terrain we draw. The diagram pairs a *regional* direction with
+  *local* geometry — correct as indicative, not as microclimate.
+- **P4 (the obstacle cap, again the big-site pattern).** Megasites cap at 4000
+  obstacles for arrows/channels (Clifton dropped 12 042) — same "most impressive
+  exports are the most degraded" shape as v6 solids and v7 shadows. Reported, real.
+- **P5 (framework now proven — so what's the next stress?).** P5 passed for a
+  module that needed no new data source. The *unproven* case is now LiDAR: a
+  module that genuinely needs a `SiteContext` field the contract lacks. The
+  framework is validated for additive modules, untested for contract growth.
+
+### 2–3. Conjectures and criticism
+
+- **C1 — LiDAR real heights (still the standout data gap).** SURVIVES, now the
+  clear v9. Wind proved the framework holds for additive modules; LiDAR is the
+  intended test of *contract growth* (DSM/DTM tiles SiteContext lacks) and the
+  proven paid feature. Falsifier unchanged: regional coverage too sparse or tiles
+  too heavy for 512 MB → forces the 2 GB tier first.
+- **C2 — Sunlight-hours heatmap.** SURVIVES to the shortlist (the portfolio
+  analysis). Still needs the new ground-grid output type and a feasibility spike
+  against the free tier.
+- **C3 — Wind.** SHIPPED. Recorded so the "ERA5 needs a key" refutation is not
+  re-litigated: Open-Meteo's archive serves it keyless.
+- **C9 — Pressure/funnelling *score* per channel** (a relative 0–1 funnel index
+  from gap width + alignment + flanking height). PROVISIONAL → leaning REFUTED on
+  honesty grounds: any single number invites exactly the CFD over-read P1 warns
+  about, with no flow physics behind it. A measured speed-up needs a solver we
+  won't ship on the free tier. Parked unless it can be framed as pure geometry
+  without implying a wind speed.
+- **C10 — Civil-time wind (diurnal rose: day vs night prevailing).** SURVIVES as a
+  cheap Pro depth item — the archive already returns hourly data, so a
+  day/night or seasonal split is free of new data and genuinely useful for
+  ventilation/comfort framing. Falsifier: it must stay legible (two roses, not
+  twelve) or it is clutter.
+
+### 4. Replacement — ranked shortlist for v9
+
+1. **LiDAR real heights (C1).** Now correctly sequenced: the framework is proven
+   for additive modules, so v9 is the deliberate test of contract growth + the
+   anchor Pro feature + the honesty fix for every shadow length.
+2. **Sunlight-hours heatmap (C2).** The crit/portfolio analysis; needs the new
+   grid output and a free-tier spike.
+3. **Diurnal/seasonal wind depth (C10).** Cheap Pro depth on data already fetched.
+4. **OSM UserText attributes** (carried from v5/v6, still unshipped). Retention,
+   not revenue; ship alongside whatever wins.
+
+### 5. New problems the survivors will create
+
+- **LiDAR** is the first module that will *grow the contract* — `SiteContext`
+  gains a DSM/DTM source and stops being minimal, and it likely needs the 2 GB
+  tier (auth/billing/entitlement infra) before it fits. The clean v8 result does
+  not transfer automatically; v9 is where "no rework" actually gets tested.
+- **Per-analysis progress copy** (the one v8 frontend change) will accrete one
+  entry per module; harmless with the generic fallback, but it is the first place
+  the spec does *not* fully drive the UI. If it grows, move the copy into the spec.
+- **Multiple wind depths** (C10) plus Sun Path's depths start to need a real
+  free/Pro entitlement boundary — the analysis-depth paywall the v7 cycle named is
+  now backed by two modules' worth of depth to gate.
+
+### Monetisation (unchanged spine, now with a second free taste)
+
+- **Free** — all geometry, Sun Path at base depth, **and** the Wind diagram
+  (prevailing arrows + rose + channels). Two real, aligned analyses prove the
+  pitch without giving away depth.
+- **Pro** — uncapped obstacles/shadows, the sunlight heatmap, diurnal/seasonal
+  wind, real LiDAR heights, and stacked/multiple analyses. The wedge is still
+  *the analysis that goes in the crit*: depth + a credible data basis.
+- **The honesty guardrail holds the line**: Wind is explicitly NOT CFD and Sun
+  Path is explicitly NOT a daylight tool — the paid value is alignment, one-click
+  speed, breadth, and (with LiDAR) real heights, never rigour we don't have.
