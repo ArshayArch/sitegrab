@@ -133,6 +133,8 @@ def _provenance_headers(stats: dict | None) -> dict[str, str]:
         "note": note,
         "prov_osm": osm, "prov_lidar": lidar, "prov_estimated": est,
         "lidar_available": bool(info.get("available")),
+        "lidar_governed": bool(info.get("governed")),
+        "lidar_reason": info.get("reason", ""),
     }
     return {
         "X-SiteGrab-Heights": _ul.quote(json.dumps(payload, ensure_ascii=False)),

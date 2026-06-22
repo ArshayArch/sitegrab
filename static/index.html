@@ -766,9 +766,22 @@
           `(${p.prov_osm} OSM tag, ${p.prov_lidar} LiDAR), ${p.prov_estimated} estimated.`
         : `<strong>${real} of ${total} building heights are surveyed</strong> (OSM tag), ` +
           `${p.prov_estimated} estimated.`;
-      heightsNoteEl.innerHTML = lead +
-        ' Surveyed heights are on the <code>BUILDINGS_*_real</code> layers, estimates on ' +
-        '<code>BUILDINGS_*_estimated</code> — so you can see which to trust.';
+      // Honest second line: WHY heights fell back to estimates. Three regimes —
+      // LiDAR ran, LiDAR skipped to fit memory (governor), or no coverage.
+      let why;
+      if (p.lidar_available) {
+        why = ' Surveyed heights are on the <code>BUILDINGS_*_real</code> layers, ' +
+          'estimates on <code>BUILDINGS_*_estimated</code> — so you can see which to trust.';
+      } else if (p.lidar_governed) {
+        why = ' LiDAR was skipped on this large site to stay within the free-tier ' +
+          'memory budget, so untagged heights are type-estimated. Real heights sit on ' +
+          'the <code>BUILDINGS_*_real</code> layers, estimates on <code>BUILDINGS_*_estimated</code>.';
+      } else {
+        why = ' Free LiDAR covers England only — outside it (or when the service is ' +
+          'unreachable) untagged heights are type-estimated. Real heights sit on the ' +
+          '<code>BUILDINGS_*_real</code> layers, estimates on <code>BUILDINGS_*_estimated</code>.';
+      }
+      heightsNoteEl.innerHTML = lead + why;
       heightsNoteEl.hidden = false;
     } catch (_) { heightsNoteEl.hidden = true; }
   }

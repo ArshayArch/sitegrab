@@ -139,3 +139,43 @@ def test_governor_is_monotonic_nonincreasing() -> None:
     assert all(b >= a for a, b in zip(vals[1:], vals[:-1]))
     # And whenever it's non-zero it's a usable size.
     assert all(v == 0 or v >= LIDAR_MIN_PX for v in vals)
+
+
+# --- the provenance/fallback header (main._provenance_headers) -----------------
+import json  # noqa: E402
+import urllib.parse as _ul  # noqa: E402
+
+from main import _provenance_headers  # noqa: E402
+
+
+def _payload(stats: dict) -> dict:
+    h = _provenance_headers(stats)
+    return json.loads(_ul.unquote(h["X-SiteGrab-Heights"]))
+
+
+def test_header_lidar_available_regime() -> None:
+    p = _payload({"prov_osm": 199, "prov_lidar": 4431, "prov_estimated": 40,
+                  "lidar": {"available": True, "reason": "England EA LiDAR."}})
+    assert p["lidar_available"] and not p["lidar_governed"]
+    assert p["prov_lidar"] == 4431
+
+
+def test_header_governed_skip_regime() -> None:
+    # Megasite: LiDAR skipped by the governor -> UI must be able to SAY so.
+    p = _payload({"prov_osm": 4275, "prov_lidar": 0, "prov_estimated": 8749,
+                  "lidar": {"available": False, "governed": True,
+                            "reason": "LiDAR skipped to stay within budget."}})
+    assert not p["lidar_available"] and p["lidar_governed"]
+
+
+def test_header_no_coverage_regime() -> None:
+    # Outside England: not available, NOT governed -> the third UI branch.
+    p = _payload({"prov_osm": 415, "prov_lidar": 0, "prov_estimated": 1067,
+                  "lidar": {"available": False,
+                            "reason": "Outside England LiDAR coverage."}})
+    assert not p["lidar_available"] and not p["lidar_governed"]
+
+
+def test_header_absent_for_non_combined() -> None:
+    # rhino/dxf-only requests build no combined model -> no provenance header.
+    assert _provenance_headers(None) == {}
