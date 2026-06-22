@@ -36,6 +36,17 @@ keys = {s.key for s in analysis.list_specs()}; \
 assert {'sun_path', 'wind'} <= keys, keys; \
 print('analyses OK', sorted(keys))"
 
+# Guard the v9 LiDAR-heights path: confirm the height sampler imports (it leans
+# on the already-verified numpy/Pillow/pyproj wheels, no new dependency) and that
+# the memory governor still enforces its safety invariant — full raster on a
+# neighbourhood site, SKIP on a megasite — so the augmented build can never blow
+# the 512 MB tier. A regression here fails the image build, not production.
+RUN python -c "import fetch_lidar; \
+from build_combined import lidar_budget_px, LIDAR_MAX_PX; \
+assert lidar_budget_px(2000) == LIDAR_MAX_PX, lidar_budget_px(2000); \
+assert lidar_budget_px(13023) == 0, lidar_budget_px(13023); \
+print('lidar guard OK', LIDAR_MAX_PX)"
+
 EXPOSE 8000
 
 # Render injects $PORT; default to 8000 for local runs. Use shell form so the

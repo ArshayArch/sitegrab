@@ -587,3 +587,160 @@ on the same code was 13 s.)
 - **The honesty guardrail holds the line**: Wind is explicitly NOT CFD and Sun
   Path is explicitly NOT a daylight tool — the paid value is alignment, one-click
   speed, breadth, and (with LiDAR) real heights, never rigour we don't have.
+
+
+# v9 — Real LiDAR heights (both v8 fears refuted)
+
+v8 ranked LiDAR first for v9 and made two confident predictions about it (C1/P5):
+that it would (a) **grow the `SiteContext` contract** with a DSM/DTM field, and
+(b) **force the paid 2 GB tier first**. Building it refuted *both* — and the
+refutations are the honest core of this version.
+
+- **"LiDAR grows the analysis contract" — REFUTED, by re-categorising it.** LiDAR
+  heights are not an *analysis* of the site; they are better *input geometry*. So
+  they belong in the massing build, not the analysis framework — and v9 wires them
+  into `build_combined`'s 3D pass, touching neither `framework.py`, `runner.py`,
+  nor `SiteContext`. v8's whole "contract growth" framing mis-classified the
+  feature. The framework was never the right home, so it never had to grow. (The
+  cost: the standalone lean `.3dm`/`.dxf` keep v5 estimates — see P4.)
+- **"LiDAR needs the 2 GB tier" — REFUTED, by a memory governor.** Instead of
+  paid infra, the same cap-for-the-free-tier pattern from v6 solids / v7 shadows /
+  v8 obstacles: `lidar_budget_px` sizes the raster from the building count and
+  *skips* it on megasites, so the augmented build stays under 512 MB. LiDAR ships
+  **free** on the existing tier; uncapped LiDAR on megasites is the clean Pro item.
+
+## What shipped (the honesty ledger)
+
+- **Per-building height resolution with provenance.** `resolve_height` (build_rhino)
+  resolves each footprint as OSM tag > sanity-passed LiDAR > type estimate, and
+  returns *which*. A real OSM tag still wins unconditionally (v5 never regresses).
+- **The sanity gate is the point.** `_lidar_is_sane` rejects a LiDAR value that is
+  too short (<2 m: demolished / mid-construction at fly-time / ground noise), absurd
+  (>280 m), too slender (h/√area > 10), or tall-on-tiny (>25 m on <50 m²: a tree or
+  aerial spike, not a tower). The design is to TRUST LiDAR when clearly good and
+  REJECT it when obviously wrong — never to believe a raster blindly.
+- **Option C — you can SEE the provenance.** Buildings split across four layers
+  (`3D/BUILDINGS_{houses,blocks}_{real,estimated}`); estimated layers take a muted
+  yellowed tint. Counts ride the `X-SiteGrab-Heights` header; the UI note states,
+  per regime, *why* any height fell back — LiDAR ran / skipped by the governor on a
+  large site / no coverage (England-only or service unreachable). Honest by the
+  numbers AND about the gaps, not just the numbers.
+- **Accuracy MEASURED, not asserted.** `validate_lidar_vs_osm.py` compares the
+  LiDAR height to the *independent* OSM tag on every building carrying one: median
+  |diff| **2.12 m** (central Shoreditch, 497 buildings), **2.30 m** (Clifton, 199),
+  ~80 % within 5 m. Two independent sources agreeing to ~2 m is the evidence the
+  heights are real, not decorative. (A draft "593 buildings / 2.1 m" claim written
+  before the measurement was caught and replaced with the reproducible figures —
+  the honesty discipline applied to our own documentation.)
+- **Memory halved at source.** `fetch_lidar` holds ONE `DSM−DTM` array (NaN where
+  either source was nodata), not both rasters, and frees it before the heavy
+  geometry/write stages. No new dependency: float32 GeoTIFF via Pillow over the
+  keyless EA WCS, the numpy/Pillow/pyproj wheels already in the image.
+- **Build guard.** The Dockerfile now fails early if `fetch_lidar` won't import or
+  the governor stops enforcing its invariant (full raster on a neighbourhood site,
+  SKIP on a megasite) — the v9 analog of the Wind registry guard.
+
+## Memory (free-tier safety)
+
+Measured combined-build peak working set (`measure_ws.py`, `psutil.peak_wset`, no
+tracemalloc — the prod-like high-water mark):
+
+| site | buildings | OSM / LiDAR / est | LiDAR | peak WS |
+|---|---|---|---|---|
+| Clifton, Bristol | 4 670 | 199 / 4 431 / 40 | full 1 m raster | **235.9 MB** |
+| Dubai Marina (non-England) | 1 482 | 415 / 0 / 1 067 | none (no coverage) | **180.5 MB** |
+| Shoreditch, London | 13 023 | 4 275 / 0 / 8 749 | **governor-skipped** | **487.4 MB** |
+
+The governor earns its place on the last row: un-governed, Shoreditch's LiDAR
+raster stacked the build to **599.5 MB — over the 512 MB ceiling**; skipping it
+holds 487.4 MB and keeps the 4 275 OSM-tagged heights. Covered mid-size England
+(Clifton) is the win: **99 %** of buildings get a real height, the estimate is the
+rare fallback (40 of 4 670), all inside the free tier.
+
+## B. Conjecture-refutation cycle (standing method)
+
+### 1. Problems in the current theory
+
+- **P1 (LiDAR is a timestamp, not "now").** A height is from the fly-over date;
+  a building demolished, re-clad taller, or mid-construction since reads wrong. The
+  sanity gate catches gross cases (a 1 m "building"), not a real 20 m block that
+  became 30 m last year. Honest as "surveyed at capture," not "current."
+- **P2 (the per-building value has a tail).** 2.1–2.3 m *median* agreement is
+  massing-grade, but the 90th percentile is 5.5–6.2 m. A user reading one
+  building's height off the model can be 5 m+ out. Correct in aggregate, only
+  indicative per building — the same analysis-not-truth line Wind/Sun Path hold.
+- **P3 (the governor degrades the most-wanted sites).** LiDAR is skipped on exactly
+  the megasites people demo first — central London gets ZERO LiDAR. Same "most
+  impressive exports are the most degraded" shape as v6/v7/v8. Reported in the
+  note, real, and the headline city is the worst case.
+- **P4 (provenance is combined-only — a cross-output inconsistency).** The split
+  and LiDAR heights apply to the combined model; the standalone `.3dm`/`.dxf` keep
+  v5 estimates (LiDAR fetched once, for the headline output, to respect the tier).
+  A user downloading only the lean `.3dm` gets neither real heights nor the
+  provenance layers, with no in-file signal. Documented, but a silent gap.
+- **P5 (coverage is England-only).** The "real heights" pitch is regional; most of
+  the world still gets estimates. The per-region plumbing for Europe/US-state DSMs
+  (each its own CRS, coverage mask, access path) is unbuilt — the data gap is
+  *narrowed*, not closed.
+
+### 2–3. Conjectures and criticism
+
+- **C1 — LiDAR real heights.** SHIPPED (England, combined model, free-tier). The v7
+  ranking-#1 data gap is closed for England; recorded so the "needs the 2 GB tier /
+  grows the contract" framing is not re-litigated — a memory governor and correct
+  categorisation refuted both.
+- **C2 — Sunlight-hours heatmap.** SURVIVES, now the clear v10 and *compounded* by
+  v9: shadow lengths are only honest where heights are real, and LiDAR makes them
+  real across covered England. Still needs the new ground-grid output type and a
+  free-tier spike. The natural next build.
+- **C3 — Straight-skeleton house roofs** (carried from v6). SURVIVES. LiDAR gives a
+  single height per footprint, not a roof form, so the 13–31 % concave-house mesh
+  fallback is untouched; this still completes v6's promise. Independent of LiDAR.
+- **C4 — Multi-region LiDAR** (Europe / US-state DSMs). NEW, from P5. Extends the
+  real-heights win beyond England. Falsifier: per-source plumbing (CRS, coverage,
+  access) may cost more than each region's user base returns — sequence by demand.
+- **C5 — LiDAR for the standalone outputs** (from P4). PROVISIONAL: re-fetching the
+  raster for the lean `.3dm`/`.dxf` doubles the data cost for outputs the combined
+  model already supersedes. Leaning REFUTED unless users actually consume the lean
+  `.3dm` as a primary — more likely just signal the estimate-only status in-file.
+- **C10 — Diurnal/seasonal wind depth** (carried from v8). SURVIVES as cheap Pro
+  depth on data already fetched; unbuilt, not urgent.
+
+### 4. Replacement — ranked shortlist for v10
+
+1. **Sunlight-hours heatmap (C2).** The crit/portfolio analysis, now compounded by
+   real LiDAR heights — the honest shadow story finally pays off. Needs the new
+   grid output type + a free-tier feasibility spike (its cost is per-cell, not
+   per-building).
+2. **Straight-skeleton house roofs (C3).** Kills the concave-house mesh fallback,
+   completes v6's promise; pure geometry, no new data.
+3. **Multi-region LiDAR (C4).** Widens the data win past England; sequence by where
+   demand actually is.
+4. **Diurnal/seasonal wind depth (C10), OSM UserText** — retention/depth carries;
+   ship alongside whatever wins.
+
+### 5. New problems the survivors will create
+
+- **The sunlight heatmap will *depend* on LiDAR coverage.** Its honesty is now
+  coupled to v9: on a governor-skipped megasite the heatmap rests on estimated
+  heights and must say so, or it over-claims exactly where it looks most impressive.
+  Two features now share one honesty boundary.
+- **Multi-region LiDAR is the per-region plumbing v7/v8 kept deferring.** Each
+  source multiplies the coverage-mask / CRS / access surface; the keyless-England
+  simplicity will not generalise for free.
+- **The Pro entitlement boundary is overdue.** Three "uncapped on the 2 GB tier"
+  items now stack — obstacles (v8), shadows (v7), LiDAR on megasites (v9). The
+  free/Pro line named since v6 needs real auth/billing before any of them ships.
+
+### Monetisation (the data wedge finally has teeth)
+
+- **Free** — all geometry, both analyses at base depth, **and real LiDAR heights
+  where they fit the free tier** (covered mid-size England). The first time the
+  free tier carries surveyed heights, not just estimates — the demo that sells.
+- **Pro** — uncapped LiDAR on the megasites people most want (central London),
+  multi-region coverage, the sunlight heatmap, analysis depth. The wedge sharpens:
+  the most-wanted sites are precisely the governor-skipped ones.
+- **The honesty guardrail holds the line**: LiDAR is a measured surface-minus-ground
+  sample at a stated ~2 m massing tolerance with a *visible* real/estimated split —
+  never sold as survey-grade per-building truth. The paid value is coverage, scale,
+  and depth, never accuracy we can't stand behind.
