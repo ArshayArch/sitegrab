@@ -103,6 +103,43 @@ def _cleanup(tmpdir: str) -> None:
         pass
 
 
+def _provenance_headers(stats: dict | None) -> dict[str, str]:
+    """Build the height-provenance response header for the combined model.
+
+    Honest, plain-language summary of how many heights are surveyed (OSM tag or
+    sanity-passed LiDAR) vs estimated, plus the LiDAR coverage/fallback reason —
+    the v9 Option-C provenance, surfaced to the UI. Empty dict if no combined
+    file was built (the header is irrelevant for rhino/dxf-only requests).
+    """
+    if not stats:
+        return {}
+    import json
+    import urllib.parse as _ul
+
+    osm = stats.get("prov_osm", 0)
+    lidar = stats.get("prov_lidar", 0)
+    est = stats.get("prov_estimated", 0)
+    real = osm + lidar
+    total = real + est
+    info = stats.get("lidar", {}) or {}
+    if lidar:
+        basis = f"{real} surveyed ({osm} OSM + {lidar} LiDAR), {est} estimated"
+    else:
+        basis = f"{real} surveyed (OSM), {est} estimated"
+    note = (f"Heights of {total} buildings: {basis}. Real heights sit on "
+            f"3D/BUILDINGS_*_real layers, estimates on 3D/BUILDINGS_*_estimated. "
+            f"{info.get('reason', '')}").strip()
+    payload = {
+        "note": note,
+        "prov_osm": osm, "prov_lidar": lidar, "prov_estimated": est,
+        "lidar_available": bool(info.get("available")),
+    }
+    return {
+        "X-SiteGrab-Heights": _ul.quote(json.dumps(payload, ensure_ascii=False)),
+        "Access-Control-Expose-Headers": "X-SiteGrab-Heights",
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
@@ -140,11 +177,12 @@ def generate(req: GenerateRequest):
 
     tmpdir = tempfile.mkdtemp(prefix="sitegrab_")
     produced: list[tuple[str, str]] = []  # (path, download_name)
+    combined_stats: dict | None = None
 
     try:
         if "combined" in wanted:
             path = os.path.join(tmpdir, f"{slug}_combined.3dm")
-            build_combined(req.area, path, bbox, terrain=req.terrain)
+            combined_stats = build_combined(req.area, path, bbox, terrain=req.terrain)
             produced.append((path, f"{slug}_combined.3dm"))
         if "rhino" in wanted:
             path = os.path.join(tmpdir, f"{slug}.3dm")
@@ -167,6 +205,10 @@ def generate(req: GenerateRequest):
         _cleanup(tmpdir)
         raise HTTPException(status_code=500, detail=f"Generation failed: {ex}")
 
+    # Height-provenance note for the combined file (Option C): surfaced to the
+    # browser via a header so the UI can show which heights are surveyed.
+    prov_headers = _provenance_headers(combined_stats)
+
     if len(produced) == 1:
         path, name = produced[0]
         media = (
@@ -178,6 +220,7 @@ def generate(req: GenerateRequest):
             path,
             media_type=media,
             filename=name,
+            headers=prov_headers,
             background=BackgroundTask(_cleanup, tmpdir),
         )
 
@@ -190,6 +233,7 @@ def generate(req: GenerateRequest):
         zip_path,
         media_type="application/zip",
         filename=f"{slug}_sitegrab.zip",
+        headers=prov_headers,
         background=BackgroundTask(_cleanup, tmpdir),
     )
 

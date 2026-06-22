@@ -40,12 +40,11 @@ def test_points_in_poly_square() -> None:
 
 
 def _synthetic(height_block: float):
-    """A 10x10 m window: flat DTM at 5 m, DSM = DTM + height over a central
-    4x4 block, returns a LidarHeights over BNG (0,0,10,10) at 1 m."""
-    dtm = np.full((10, 10), 5.0, dtype=np.float32)
-    dsm = dtm.copy()
-    dsm[3:7, 3:7] += height_block
-    return LidarHeights(dsm, dtm, (0.0, 0.0, 10.0, 10.0), 1.0)
+    """A 10x10 m window of height-above-ground: 0 m everywhere except a central
+    4x4 block at ``height_block``; LidarHeights over BNG (0,0,10,10) at 1 m."""
+    hgt = np.zeros((10, 10), dtype=np.float32)
+    hgt[3:7, 3:7] = height_block
+    return LidarHeights(hgt, (0.0, 0.0, 10.0, 10.0), 1.0)
 
 
 def test_height_for_reads_block(monkeypatch) -> None:
@@ -60,7 +59,7 @@ def test_height_for_reads_block(monkeypatch) -> None:
 
 def test_height_for_nodata_falls_back() -> None:
     lid = _synthetic(10.0)
-    lid.dsm[:] = -3.4e38                   # whole window nodata
+    lid.hgt[:] = np.nan                    # whole window nodata
     lid._tf = type("I", (), {"transform": staticmethod(lambda x, y: (x, y))})()
     h, n = lid.height_for([(3, 3), (7, 3), (7, 7), (3, 7)])
     assert h is None and n == 0
@@ -113,3 +112,30 @@ def test_resolve_rejects_tall_on_tiny_footprint() -> None:
 def test_resolve_none_lidar_falls_back() -> None:
     h, p = rh.resolve_height({"building": "office"}, _SQUARE, 1, None)
     assert p == rh.PROV_ESTIMATED and h > 0
+
+
+# --- the LiDAR memory governor (build_combined.lidar_budget_px) ----------------
+from build_combined import (  # noqa: E402
+    LIDAR_MAX_PX,
+    LIDAR_MIN_PX,
+    lidar_budget_px,
+)
+
+
+def test_governor_small_site_full_resolution() -> None:
+    # A neighbourhood-scale site gets the full raster cap.
+    assert lidar_budget_px(2000) == LIDAR_MAX_PX
+
+
+def test_governor_megasite_skips() -> None:
+    # The canonical Shoreditch megasite (13k buildings) is skipped (0 = fall
+    # back to estimates rather than risk the 512 MB tier).
+    assert lidar_budget_px(13023) == 0
+
+
+def test_governor_is_monotonic_nonincreasing() -> None:
+    # More buildings -> never a bigger LiDAR budget.
+    vals = [lidar_budget_px(nb) for nb in range(1000, 14000, 1000)]
+    assert all(b >= a for a, b in zip(vals[1:], vals[:-1]))
+    # And whenever it's non-zero it's a usable size.
+    assert all(v == 0 or v >= LIDAR_MIN_PX for v in vals)

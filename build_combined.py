@@ -39,6 +39,7 @@ import build_rhino as rh
 from build_terrain import add_terrain
 from fetch_core import fetch_overpass, get_transformer, resolve_area
 from fetch_elevation import ElevationGrid, fetch_elevation_grid
+from fetch_lidar import LidarHeights, fetch_lidar_heights
 
 # RGB palette for the Linework groups, keyed by the top-level DXF category.
 # (build_dxf uses AutoCAD Color Index integers; Rhino needs RGB, so we map the
@@ -56,6 +57,55 @@ LINEWORK_COLORS: dict[str, tuple[int, int, int]] = {
     "ADMIN": (200, 80, 200),
     "LABEL": (200, 200, 200),
 }
+
+# Provenance-split building layers (v9, Option C). "real" = a real OSM
+# height/levels tag OR a sanity-passed LiDAR measurement; "estimated" = the
+# type/footprint guess. Real layers keep the v5 house/block hues; estimated
+# layers take a muted yellowed tint so the eye reads them as approximate.
+_PROVENANCE_LAYERS: dict[str, tuple[int, int, int]] = {
+    "BUILDINGS_houses_real": (190, 125, 95),
+    "BUILDINGS_houses_estimated": (203, 185, 140),
+    "BUILDINGS_blocks_real": (150, 150, 150),
+    "BUILDINGS_blocks_estimated": (197, 192, 165),
+}
+
+# --- LiDAR memory governor (v9) -------------------------------------------
+# The 512 MB free tier is the binding constraint (REALISM_AND_GAPS v6/v7). The
+# LiDAR rasters stack with the massing build's working set, and the canonical
+# Shoreditch megasite measured 606 MB un-governed (v6 baseline 485). So, exactly
+# as houses are converted to solids only within a measured budget, LiDAR is
+# fetched only with enough headroom — otherwise the site keeps type estimates
+# and SAYS SO (never a silent OOM). Full-resolution, uncapped LiDAR on megasites
+# is the Pro / 2 GB-tier feature.
+#
+# Baseline peak (MB) ~ fixed cost + per-building, fitted to the v6 benches
+# (160 MB + ~25 KB/building reproduces Shoreditch 485 / Clifton ~225). LiDAR is
+# allowed to spend down to a target at/below v6's proven-deployable peak; the
+# remaining headroom buys the single held height raster (px^2 * 4 bytes), with a
+# safety factor for the fetch/decode transient and per-footprint churn.
+LIDAR_BASE_MB = 160.0
+LIDAR_PER_BLDG_MB = 0.025
+LIDAR_PEAK_TARGET_MB = 470.0
+LIDAR_SAFETY = 0.45            # fraction of headroom spent on the held raster
+LIDAR_MIN_PX = 500            # below this the raster is too coarse to bother
+LIDAR_MAX_PX = 2000          # absolute cap (matches fetch_lidar.MAX_PX)
+
+
+def lidar_budget_px(n_buildings: int) -> int:
+    """Largest LiDAR raster (px/axis) that fits the memory budget; 0 = skip.
+
+    Returns 0 when the massing build alone is already near the ceiling (the
+    megasite case), so the caller skips LiDAR and falls back to estimates.
+    """
+    headroom_mb = LIDAR_PEAK_TARGET_MB - (LIDAR_BASE_MB + LIDAR_PER_BLDG_MB * n_buildings)
+    if headroom_mb <= 0:
+        return 0
+    budget_bytes = headroom_mb * 1.0e6 * LIDAR_SAFETY
+    px = int((budget_bytes / 4.0) ** 0.5)        # one float32 array
+    if px < LIDAR_MIN_PX:
+        return 0
+    return min(LIDAR_MAX_PX, px)
+
 
 # With terrain OFF everything sits on the Z=0 plane (original behaviour).
 # With terrain ON the flat datum becomes the site's lowest elevation instead.
@@ -209,6 +259,7 @@ def _build_3d_group(
     corners_ll: list[tuple[float, float]],
     grid: ElevationGrid | None = None,
     datum: float = FLAT_GROUND_Z,
+    lidar: LidarHeights | None = None,
 ) -> dict[str, Any]:
     """Populate the ``3D/`` group from the LEAN dataset, reusing build_rhino logic.
 
@@ -217,10 +268,22 @@ def _build_3d_group(
     the slope — see TOPO_RATIONALE.md), main roads drape per-vertex, and water
     sits flat at the lowest ground under its outline. Without a grid the
     original flat behaviour at ``datum`` (Z=0) is unchanged.
+
+    With ``lidar`` (England only), each building's height is resolved per-building
+    (OSM tag > sanity-passed LiDAR > estimate) and placed on a provenance layer:
+    real heights on ``BUILDINGS_*_real``, estimates on ``BUILDINGS_*_estimated``,
+    so the user can SEE which heights are surveyed (Option C).
     """
     parent = _add_parent(model, "3D", (200, 200, 200))
     cache: dict[str, int] = {}
     for nm, rgb in rh._LAYERS.items():  # pre-create the massing layers
+        if nm in ("BUILDINGS_houses", "BUILDINGS_blocks"):
+            continue  # replaced by the provenance-split layers below
+        _add_child(model, nm, parent, rgb, cache)
+    # Provenance split (Option C): real (OSM tag or sanity-passed LiDAR) vs
+    # estimated, keeping the house/block grain. Estimated layers take a muted,
+    # yellowed tint so "approximate" reads at a glance; real keeps the v5 hues.
+    for nm, rgb in _PROVENANCE_LAYERS.items():
         _add_child(model, nm, parent, rgb, cache)
     # Ground-surface layers, filled during the later detailed pass (the lean
     # dataset has no footways or green space).
@@ -232,6 +295,11 @@ def _build_3d_group(
     buildings = houses = roads = water = 0
     house_solids = house_mesh_fallbacks = house_budget_skips = 0
     solid_failures: dict[str, int] = {}
+    # Height provenance tally (Option C reporting). LiDAR coverage is the count
+    # of footprints that had a usable LiDAR sample (covered+dense enough),
+    # whether or not the sanity check then accepted it.
+    prov_counts = {rh.PROV_OSM: 0, rh.PROV_LIDAR: 0, rh.PROV_ESTIMATED: 0}
+    lidar_covered = 0
     solid_budget = rh.house_solid_budget(sum(
         1 for el in data.get("elements", [])
         if el.get("type") == "way" and "building" in el.get("tags", {})))
@@ -255,7 +323,19 @@ def _build_3d_group(
                 if grid is not None
                 else datum
             )
-            height, _estimated = rh.building_height(tags, pts, el.get("id", 0))
+            # Per-building height + provenance: OSM tag > sanity-passed LiDAR >
+            # estimate. The LiDAR sample is taken from the footprint's lon/lat
+            # ring (same coords the grid uses), so it aligns with the model.
+            lidar_h = None
+            if lidar is not None:
+                lidar_h, _npx = lidar.height_for([(p["lon"], p["lat"]) for p in geom])
+                if lidar_h is not None:
+                    lidar_covered += 1
+            height, prov = rh.resolve_height(tags, pts, el.get("id", 0), lidar_h)
+            prov_counts[prov] += 1
+            real = prov != rh.PROV_ESTIMATED
+            houses_layer = "BUILDINGS_houses_real" if real else "BUILDINGS_houses_estimated"
+            blocks_layer = "BUILDINGS_blocks_real" if real else "BUILDINGS_blocks_estimated"
             if rh.is_house(tags, rh._footprint_area_m2(pts)):
                 added = False
                 if house_solids < solid_budget:
@@ -264,13 +344,13 @@ def _build_3d_group(
                     solid = None
                     house_budget_skips += 1
                 if solid is not None:
-                    model.Objects.AddBrep(solid, _attrs(cache["BUILDINGS_houses"]))
+                    model.Objects.AddBrep(solid, _attrs(cache[houses_layer]))
                     house_solids += 1
                     added = True
                 else:
                     mesh = rh.house_mesh(pts, base, height)
                     if mesh is not None:
-                        model.Objects.AddMesh(mesh, _attrs(cache["BUILDINGS_houses"]))
+                        model.Objects.AddMesh(mesh, _attrs(cache[houses_layer]))
                         house_mesh_fallbacks += 1
                         added = True
                 if added:
@@ -288,7 +368,7 @@ def _build_3d_group(
                 continue
             # Profile lies in a horizontal plane, so positive height extrudes
             # +Z (upward) from the base level.
-            model.Objects.AddExtrusion(extrusion, _attrs(cache["BUILDINGS_blocks"]))
+            model.Objects.AddExtrusion(extrusion, _attrs(cache[blocks_layer]))
             if len(base_z_samples) < 10:
                 base_z_samples.append(base)
             buildings += 1
@@ -339,6 +419,10 @@ def _build_3d_group(
         "water": water,
         "base_z_samples": base_z_samples,
         "surface_layers": surface_layers,
+        "prov_osm": prov_counts[rh.PROV_OSM],
+        "prov_lidar": prov_counts[rh.PROV_LIDAR],
+        "prov_estimated": prov_counts[rh.PROV_ESTIMATED],
+        "lidar_covered": lidar_covered,
     }
 
 
@@ -485,8 +569,35 @@ def build_combined(
     # pavement/green surfaces in the detailed pass. All queries share the
     # same bbox and transformer, so the groups stay aligned.
     lean = fetch_overpass(rh._QUERY_TEMPLATE.format(bbox=bbox))
-    g3d = _build_3d_group(model, lean, transformer, corners_ll, grid, datum)
+
+    # Real building heights from free LiDAR (England), resolved per-building in
+    # the 3D massing below. The raster is fetched here so it lives only across
+    # the massing loop and is released before the heavier linework/write stages.
+    # A MEMORY GOVERNOR sizes (or skips) it from the building count so the
+    # augmented build stays inside the 512 MB tier; outside England the fetch
+    # returns (None, ...) instantly. Either way every uncovered building falls
+    # back to the v5 estimate — see fetch_lidar / build_rhino / the governor.
+    n_buildings = sum(
+        1 for el in lean.get("elements", [])
+        if el.get("type") == "way" and "building" in el.get("tags", {}))
+    budget_px = lidar_budget_px(n_buildings)
+    if budget_px <= 0:
+        lidar, lidar_info = None, {
+            "available": False,
+            "reason": (f"LiDAR skipped to stay within the free-tier memory "
+                       f"budget on this large site ({n_buildings} buildings); "
+                       f"heights are type-estimated. Full-resolution LiDAR on "
+                       f"large sites is a Pro-tier feature."),
+            "governed": True, "n_buildings": n_buildings}
+    else:
+        lidar, lidar_info = fetch_lidar_heights(s, w, n, e, max_px=budget_px)
+        lidar_info["budget_px"] = budget_px
+
+    g3d = _build_3d_group(model, lean, transformer, corners_ll, grid, datum, lidar)
     del lean
+    if lidar is not None:
+        lidar.release()
+        del lidar
     gc.collect()
 
     detailed = fetch_overpass(dxf._QUERY_TEMPLATE.format(bbox=bbox))
@@ -532,6 +643,12 @@ def build_combined(
         "has_linework_group": has_linework,
         "has_terrain_group": has_terrain,
         "terrain": tstats,
+        # Height provenance (Option C): real = OSM tag or sanity-passed LiDAR.
+        "prov_osm": g3d["prov_osm"],
+        "prov_lidar": g3d["prov_lidar"],
+        "prov_estimated": g3d["prov_estimated"],
+        "lidar_covered": g3d["lidar_covered"],
+        "lidar": lidar_info,
     }
 
 

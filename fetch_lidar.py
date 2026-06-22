@@ -110,10 +110,12 @@ def _get_coverage(wcs: str, cid: str, bng_bbox: tuple[float, float, float, float
 
 
 class LidarHeights:
-    """DSM/DTM rasters for a bbox + a per-footprint height sampler.
+    """A single height-above-ground raster for a bbox + a per-footprint sampler.
 
-    Both arrays share the same EPSG:27700 window and shape; a building height is
-    a high percentile of per-pixel ``DSM - DTM`` inside the footprint polygon.
+    To halve resident memory on the 512 MB tier we hold ONE array — the
+    per-pixel ``DSM - DTM`` (NaN where either source was nodata) — not both
+    rasters; the difference is all the height sampler needs. A building height is
+    a high percentile of that difference inside the footprint polygon.
     """
 
     # Percentile of (DSM-DTM) used as the building height: high enough to reach
@@ -122,13 +124,12 @@ class LidarHeights:
     HEIGHT_PCTL = 85.0
     MIN_VALID_PX = 3          # too few covered pixels -> untrustworthy -> None
 
-    def __init__(self, dsm: np.ndarray, dtm: np.ndarray,
+    def __init__(self, hgt: np.ndarray,
                  bng_bbox: tuple[float, float, float, float], res_m: float):
-        self.dsm = dsm
-        self.dtm = dtm
+        self.hgt = hgt        # height above ground (m), NaN where no coverage
         self.minx, self.miny, self.maxx, self.maxy = bng_bbox
         self.res_m = res_m
-        h, w = dsm.shape
+        h, w = hgt.shape
         self._h, self._w = h, w
         self._resE = (self.maxx - self.minx) / w
         self._resN = (self.maxy - self.miny) / h
@@ -158,27 +159,23 @@ class LidarHeights:
         if c1 <= c0 or r1 <= r0:
             return None, 0
 
-        dsm_win = self.dsm[r0:r1, c0:c1]
-        dtm_win = self.dtm[r0:r1, c0:c1]
+        hgt_win = self.hgt[r0:r1, c0:c1]
         # Pixel-centre coordinates for the window.
         cc = self.minx + (np.arange(c0, c1) + 0.5) * self._resE
         rr = self.maxy - (np.arange(r0, r1) + 0.5) * self._resN
         gx, gy = np.meshgrid(cc, rr)
         inside = _points_in_poly(gx, gy, es, ns)
 
-        valid = (inside
-                 & np.isfinite(dsm_win) & np.isfinite(dtm_win)
-                 & (dsm_win > _NODATA_BELOW) & (dtm_win > _NODATA_BELOW))
+        valid = inside & np.isfinite(hgt_win)
         n = int(valid.sum())
         if n < self.MIN_VALID_PX:
             return None, n
-        diff = dsm_win[valid] - dtm_win[valid]
-        return float(np.percentile(diff, self.HEIGHT_PCTL)), n
+        return float(np.percentile(hgt_win[valid], self.HEIGHT_PCTL)), n
 
     def release(self) -> None:
-        """Free the rasters once the building loop is done (before the heavy
-        rhino3dm geometry/write stages), so they never stack with that peak."""
-        self.dsm = self.dtm = None  # type: ignore[assignment]
+        """Free the raster once the building loop is done (before the heavy
+        rhino3dm geometry/write stages), so it never stacks with that peak."""
+        self.hgt = None  # type: ignore[assignment]
         gc.collect()
 
 
@@ -200,9 +197,14 @@ def _points_in_poly(gx: np.ndarray, gy: np.ndarray,
     return inside
 
 
-def fetch_lidar_heights(s: float, w: float, n: float, e: float
+def fetch_lidar_heights(s: float, w: float, n: float, e: float,
+                        max_px: int = MAX_PX
                         ) -> tuple[LidarHeights | None, dict]:
     """Fetch DSM+DTM for the WGS84 bbox; None if outside England coverage.
+
+    ``max_px`` caps the raster's larger axis — the memory governor in
+    build_combined passes a smaller value (or skips the call entirely) on big
+    sites so the augmented build stays inside the 512 MB tier.
 
     Returns ``(heights | None, info)``. ``info`` always carries ``available``
     and a human ``reason``; when available it adds the effective resolution and
@@ -226,7 +228,7 @@ def fetch_lidar_heights(s: float, w: float, n: float, e: float
     miny = max(miny, _COVER_N[0]); maxy = min(maxy, _COVER_N[1])
     span = max(maxx - minx, maxy - miny)
     px_native = span / NATIVE_RES_M
-    scalefactor = min(1.0, MAX_PX / px_native) if px_native > 0 else 1.0
+    scalefactor = min(1.0, max_px / px_native) if px_native > 0 else 1.0
     res_m = NATIVE_RES_M / scalefactor
     bng = (minx, miny, maxx, maxy)
     try:
@@ -239,9 +241,16 @@ def fetch_lidar_heights(s: float, w: float, n: float, e: float
     # Align shapes defensively (server pixel-snapping can differ by a row/col).
     h0 = min(dsm.shape[0], dtm.shape[0])
     w0 = min(dsm.shape[1], dtm.shape[1])
-    dsm = dsm[:h0, :w0]
-    dtm = dtm[:h0, :w0]
-    heights = LidarHeights(dsm, dtm, bng, res_m)
+    # Collapse to ONE height-above-ground array (NaN where either source was
+    # nodata) and free the two source rasters immediately, halving resident
+    # memory for the rest of the build.
+    hgt = dsm[:h0, :w0] - dtm[:h0, :w0]
+    bad = ((dsm[:h0, :w0] <= _NODATA_BELOW) | (dtm[:h0, :w0] <= _NODATA_BELOW)
+           | ~np.isfinite(dsm[:h0, :w0]) | ~np.isfinite(dtm[:h0, :w0]))
+    hgt[bad] = np.nan
+    del dsm, dtm, bad
+    gc.collect()
+    heights = LidarHeights(hgt, bng, res_m)
     return heights, {
         "available": True,
         "reason": "England EA LiDAR (DSM-DTM, 1 m composite).",

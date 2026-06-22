@@ -272,6 +272,15 @@
   }
   .editrow button:hover { background: var(--accent-ink); }
 
+  /* ---- height-provenance note ---- */
+  .heights-note {
+    margin-top: 12px; padding: 11px 14px;
+    border: 1px solid var(--line); border-left: 3px solid var(--accent-ink);
+    border-radius: var(--radius); background: var(--card);
+    color: var(--muted); font-size: 0.86rem; line-height: 1.45;
+  }
+  .heights-note strong { color: var(--ink); font-weight: 600; }
+
   /* ---- download cards ---- */
   .downloads { display: grid; gap: 10px; }
   .dl {
@@ -440,6 +449,7 @@
   <section class="block" id="resultsSection" hidden>
     <div class="section-head"><h2>Files</h2></div>
     <div class="downloads" id="downloads"></div>
+    <div class="heights-note" id="heightsNote" hidden></div>
   </section>
 
   <!-- design brief -->
@@ -741,6 +751,27 @@
     const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
     return m ? decodeURIComponent(m[1]) : fallback;
   }
+  // Height provenance (v9, Option C): read the combined response header and
+  // show, honestly, how many heights are surveyed vs estimated.
+  const heightsNoteEl = $("heightsNote");
+  function showHeightsNote(resp) {
+    try {
+      const raw = resp.headers.get("X-SiteGrab-Heights");
+      if (!raw) { heightsNoteEl.hidden = true; return; }
+      const p = JSON.parse(decodeURIComponent(raw));
+      const real = (p.prov_osm || 0) + (p.prov_lidar || 0);
+      const total = real + (p.prov_estimated || 0);
+      const lead = p.prov_lidar
+        ? `<strong>${real} of ${total} building heights are surveyed</strong> ` +
+          `(${p.prov_osm} OSM tag, ${p.prov_lidar} LiDAR), ${p.prov_estimated} estimated.`
+        : `<strong>${real} of ${total} building heights are surveyed</strong> (OSM tag), ` +
+          `${p.prov_estimated} estimated.`;
+      heightsNoteEl.innerHTML = lead +
+        ' Surveyed heights are on the <code>BUILDINGS_*_real</code> layers, estimates on ' +
+        '<code>BUILDINGS_*_estimated</code> — so you can see which to trust.';
+      heightsNoteEl.hidden = false;
+    } catch (_) { heightsNoteEl.hidden = true; }
+  }
   function prettySize(n) {
     if (!n && n !== 0) return "";
     if (n < 1024) return n + " B";
@@ -813,6 +844,8 @@
           failCard(cards[fmt], msg);
           continue;
         }
+        // Height provenance (combined only): show which heights are surveyed.
+        if (fmt === "combined") showHeightsNote(resp);
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         newUrls.push(url);
@@ -899,6 +932,7 @@
     resultsSection.hidden = true;
     briefSection.hidden = true;
     downloads.innerHTML = "";
+    heightsNoteEl.hidden = true;
     revokeAnalysis();
     analysisResultsSection.hidden = true;
     analysisDownloads.innerHTML = "";
