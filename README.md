@@ -21,6 +21,21 @@ No database, no accounts. You type a name, tick the outputs you want, and the fi
 stream back as a download. Everything is reprojected into the correct local **UTM survey
 grid** so it lands in real-world metres.
 
+### Pages
+
+- **`/`** — the landing page (dark, architectural). Sells the product, shows what it
+  produces, explains Free vs Pro, and captures Pro waitlist signups.
+- **`/app`** — the tool itself (map, generate, analysis, downloads, design brief).
+- **`/api/waitlist`** — `POST {"email": "..."}`. Validates, de-dupes, rate-limits to
+  3/hour per IP, and appends `{email, timestamp}` to **`waitlist.json`** (project root,
+  **gitignored** — signup emails are never committed).
+
+> **Hero image — replace before going live.** The landing page shows
+> `static/hero-model.png`, which currently ships as a **dark placeholder**. Replace it
+> with a real Rhino screenshot of a SiteGrab output (Clifton, Bristol or Dubai Marina)
+> showing the layer panel, terrain and massing — same 1200×675 (16:9) dimensions. Drop
+> the new PNG at `static/hero-model.png`; no code change needed.
+
 ---
 
 ## How it works
