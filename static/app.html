@@ -3,27 +3,30 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SiteGrab — real site data for any area in the world</title>
+<title>SiteGrab — the tool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
       crossorigin="" referrerpolicy="no-referrer" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
       crossorigin="" referrerpolicy="no-referrer" />
 <style>
   :root {
-    --paper: #f7f6f2;
-    --card: #ffffff;
-    --ink: #17191c;
-    --muted: #6c6f76;
-    --faint: #9a9da3;
-    --line: #e3e2db;
-    --line-strong: #cdccc3;
-    --accent: #2f4a6b;        /* muted slate blue */
-    --accent-soft: #eef1f6;
-    --accent-ink: #20364f;
-    --ok: #2f6b4f;
-    --error: #a23b2e;
+    --paper: #0a0a0a;         /* page bg + inset fields (darker than cards) */
+    --card: #161616;          /* raised cards / panels */
+    --ink: #f5f5f0;
+    --muted: #9a9a93;
+    --faint: #6b6b66;
+    --line: #222220;
+    --line-strong: #2e2e2b;
+    --accent: #c8922a;        /* deep amber/ochre — restrained accent */
+    --accent-soft: rgba(200,146,42,0.13);
+    --accent-ink: #e0a838;    /* brighter amber for hover */
+    --ok: #6fae84;
+    --error: #d2705f;
     --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --radius: 4px;
   }
   * { box-sizing: border-box; }
@@ -36,31 +39,33 @@
     -webkit-font-smoothing: antialiased;
     line-height: 1.5;
   }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 64px 24px 56px; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 44px 24px 56px; }
+
+  /* ---- top bar ---- */
+  .topbar {
+    position: sticky; top: 0; z-index: 1000;
+    background: rgba(10,10,10,0.82);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner {
+    max-width: 720px; margin: 0 auto; padding: 15px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .wordmark {
+    font-size: 1.18rem; font-weight: 700; letter-spacing: -0.01em;
+    margin: 0; text-decoration: none; color: var(--ink);
+  }
+  .wordmark .s { color: var(--accent); }
+  .backlink {
+    text-decoration: none; color: var(--muted); font-size: 0.92rem; font-weight: 500;
+    transition: color .15s;
+  }
+  .backlink:hover { color: var(--ink); }
 
   /* ---- header ---- */
-  header { margin-bottom: 40px; }
-  .wordmark {
-    font-size: 1.9rem;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    margin: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-  }
-  .wordmark .tick {
-    font-family: var(--mono);
-    font-size: 0.62rem;
-    font-weight: 500;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--accent);
-    border: 1px solid var(--line-strong);
-    border-radius: 2px;
-    padding: 2px 6px;
-    transform: translateY(-4px);
-  }
+  header { margin-bottom: 32px; }
+  .page-title { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
   header p.sub { margin: 8px 0 0; color: var(--muted); font-size: 1.02rem; }
 
   /* ---- card ---- */
@@ -135,7 +140,7 @@
     color: var(--accent); background: var(--card); border: 1px solid var(--accent);
     border-radius: var(--radius); cursor: pointer; transition: background .15s, color .15s;
   }
-  .map-search button:hover { background: var(--accent); color: #fff; }
+  .map-search button:hover { background: var(--accent); color: #0a0a0a; }
   .map-search button:disabled { opacity: .5; cursor: progress; }
 
   /* ---- map ---- */
@@ -219,7 +224,7 @@
   button.generate {
     width: 100%; margin-top: 20px; padding: 15px;
     font-size: 1.02rem; font-weight: 600; font-family: var(--sans);
-    color: #fff; background: var(--accent); border: 1px solid var(--accent-ink);
+    color: #0a0a0a; background: var(--accent); border: 1px solid var(--accent);
     border-radius: var(--radius); cursor: pointer; transition: background .15s, opacity .15s;
   }
   button.generate:hover:not(:disabled) { background: var(--accent-ink); }
@@ -267,7 +272,7 @@
     border: 1px solid var(--accent); border-radius: var(--radius); background: var(--paper); color: var(--ink); outline: none;
   }
   .editrow button {
-    padding: 0 16px; font-weight: 600; font-family: var(--sans); color: #fff; background: var(--accent);
+    padding: 0 16px; font-weight: 600; font-family: var(--sans); color: #0a0a0a; background: var(--accent);
     border: none; border-radius: var(--radius); cursor: pointer;
   }
   .editrow button:hover { background: var(--accent-ink); }
@@ -302,11 +307,11 @@
     color: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius); padding: 8px 14px;
     transition: background .15s, color .15s;
   }
-  .dl a.btn:hover { background: var(--accent); color: #fff; }
+  .dl a.btn:hover { background: var(--accent); color: #0a0a0a; }
   .dl.pending { opacity: 0.6; }
   .dl.pending a.btn { pointer-events: none; opacity: 0.5; }
   .dl.failed { border-color: var(--error); }
-  .dl.failed .ext { background: #f6e7e4; color: var(--error); }
+  .dl.failed .ext { background: rgba(210,112,95,0.13); color: var(--error); }
 
   /* ---- brief ---- */
   .brief-panel { animation: fade .5s ease both; }
@@ -342,7 +347,7 @@
     color: var(--muted); background: var(--paper); border: 1px solid var(--line-strong);
     border-radius: var(--radius); padding: 6px 11px; transition: all .12s;
   }
-  .param-chip.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .param-chip.on { color: #0a0a0a; background: var(--accent); border-color: var(--accent); }
   .param-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 16px;
     font-size: 0.88rem; cursor: pointer; user-select: none; }
   .param-toggle input { accent-color: var(--accent); width: 15px; height: 15px; margin: 2px 0 0; }
@@ -373,10 +378,16 @@
 </script>
 </head>
 <body>
+<nav class="topbar">
+  <div class="topbar-inner">
+    <a class="wordmark" href="/"><span class="s">S</span>iteGrab</a>
+    <a class="backlink" href="/">← Back</a>
+  </div>
+</nav>
 <div class="wrap">
   <header>
-    <h1 class="wordmark">SiteGrab <span class="tick">OSM → CAD</span></h1>
-    <p class="sub">Pull real site data for any area in the world.</p>
+    <h1 class="page-title">Generate a site model</h1>
+    <p class="sub">Real site data for any area in the world — drawn on the map or by name.</p>
   </header>
 
   <div class="card">
@@ -412,19 +423,19 @@
       <div class="toggle active" data-fmt="combined" role="checkbox" aria-checked="true" tabindex="0">
         <input type="checkbox" checked />
         <span class="rec">Recommended</span>
-        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         <span class="t-title">Combined Rhino File</span>
         <span class="t-sub">.3dm · 3D + 2D aligned</span>
       </div>
       <div class="toggle" data-fmt="rhino" role="checkbox" aria-checked="false" tabindex="0">
         <input type="checkbox" />
-        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         <span class="t-title">3D Massing only</span>
         <span class="t-sub">.3dm · buildings</span>
       </div>
       <div class="toggle" data-fmt="dxf" role="checkbox" aria-checked="false" tabindex="0">
         <input type="checkbox" />
-        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#0a0a0a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         <span class="t-title">2D Linework only</span>
         <span class="t-sub">.dxf · basemap</span>
       </div>
@@ -600,7 +611,7 @@
       draw: {
         polyline: false, polygon: false, circle: false, marker: false, circlemarker: false,
         rectangle: {
-          shapeOptions: { color: "#2f4a6b", weight: 2, fillColor: "#2f4a6b", fillOpacity: 0.12 },
+          shapeOptions: { color: "#c8922a", weight: 2, fillColor: "#c8922a", fillOpacity: 0.14 },
           metric: true,
         },
       },
