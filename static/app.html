@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SiteGrab — real site data for any area in the world</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+      crossorigin="" referrerpolicy="no-referrer" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+      crossorigin="" referrerpolicy="no-referrer" />
+<style>
+  :root {
+    --paper: #f7f6f2;
+    --card: #ffffff;
+    --ink: #17191c;
+    --muted: #6c6f76;
+    --faint: #9a9da3;
+    --line: #e3e2db;
+    --line-strong: #cdccc3;
+    --accent: #2f4a6b;        /* muted slate blue */
+    --accent-soft: #eef1f6;
+    --accent-ink: #20364f;
+    --ok: #2f6b4f;
+    --error: #a23b2e;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --radius: 4px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 64px 24px 56px; }
+
+  /* ---- header ---- */
+  header { margin-bottom: 40px; }
+  .wordmark {
+    font-size: 1.9rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .wordmark .tick {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--line-strong);
+    border-radius: 2px;
+    padding: 2px 6px;
+    transform: translateY(-4px);
+  }
+  header p.sub { margin: 8px 0 0; color: var(--muted); font-size: 1.02rem; }
+
+  /* ---- card ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .label {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    display: block;
+    margin-bottom: 10px;
+  }
+
+  /* ---- tabs ---- */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tab {
+    appearance: none; background: none; border: none; cursor: pointer;
+    font-family: var(--sans); font-size: 0.95rem; font-weight: 600; color: var(--muted);
+    padding: 10px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .rec-dot {
+    font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--accent); margin-left: 7px; vertical-align: 1px;
+  }
+  .tabpane[hidden] { display: none; }
+  @media (max-width: 440px) {
+    .wrap { padding: 40px 16px 48px; }
+    .card { padding: 18px; }
+    .tab { padding: 9px 8px; font-size: 0.9rem; }
+    .tab .rec-dot { display: none; }   /* keep both tabs on one row on phones */
+  }
+
+  /* ---- text input ---- */
+  #area {
+    width: 100%;
+    padding: 15px 16px;
+    font-size: 1.12rem;
+    font-family: var(--sans);
+    background: var(--paper);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    color: var(--ink);
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  #area:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #area::placeholder { color: var(--faint); }
+
+  /* ---- map search row ---- */
+  .map-search { display: flex; gap: 8px; margin-bottom: 12px; }
+  .map-search input {
+    flex: 1; padding: 12px 14px; font-size: 1rem; font-family: var(--sans);
+    background: var(--paper); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    color: var(--ink); outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  .map-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .map-search input::placeholder { color: var(--faint); }
+  .map-search button {
+    flex: none; padding: 0 16px; font-weight: 600; font-family: var(--sans); font-size: 0.92rem;
+    color: var(--accent); background: var(--card); border: 1px solid var(--accent);
+    border-radius: var(--radius); cursor: pointer; transition: background .15s, color .15s;
+  }
+  .map-search button:hover { background: var(--accent); color: #fff; }
+  .map-search button:disabled { opacity: .5; cursor: progress; }
+
+  /* ---- map ---- */
+  #map {
+    width: 100%; height: 440px;
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+    background: var(--paper); z-index: 0;
+  }
+  @media (max-width: 560px) { #map { height: 360px; } }
+  .leaflet-container { font-family: var(--sans); }
+
+  /* ---- readout ---- */
+  .readout {
+    margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 11px 14px; background: var(--paper); min-height: 44px;
+  }
+  .readout .dims { font-family: var(--mono); font-size: 0.92rem; font-weight: 600; color: var(--ink); }
+  .readout .est { font-size: 0.86rem; color: var(--muted); }
+  .readout .est.light { color: var(--ok); }
+  .readout .est.moderate { color: var(--accent); }
+  .readout .est.large { color: var(--error); }
+  .readout .hint { font-size: 0.9rem; color: var(--faint); font-style: italic; }
+  .readout .grow { flex: 1; }
+  .maptools { margin-top: 8px; }
+
+  /* ---- toggle cards ---- */
+  .formats { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 22px 0 4px; }
+  @media (min-width: 560px) { .formats { grid-template-columns: 1fr 1fr 1fr; } }
+  .toggle {
+    position: relative;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    padding: 14px 14px 16px;
+    cursor: pointer;
+    user-select: none;
+    background: var(--card);
+    transition: border-color .15s, background .15s, box-shadow .15s;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .toggle:hover { border-color: var(--accent); }
+  .toggle.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+  .toggle .box {
+    width: 16px; height: 16px; border: 1.5px solid var(--line-strong);
+    border-radius: 3px; display: inline-flex; align-items: center; justify-content: center;
+    transition: background .15s, border-color .15s;
+  }
+  .toggle.active .box { background: var(--accent); border-color: var(--accent); }
+  .toggle .box svg { width: 10px; height: 10px; opacity: 0; transition: opacity .15s; }
+  .toggle.active .box svg { opacity: 1; }
+  .toggle .t-title { font-weight: 600; font-size: 0.95rem; }
+  .toggle .t-sub { font-size: 0.78rem; color: var(--muted); font-family: var(--mono); letter-spacing: 0.02em; }
+  .toggle .rec {
+    position: absolute; top: 12px; right: 12px;
+    font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--accent); background: var(--card); border: 1px solid var(--accent);
+    border-radius: 2px; padding: 1px 5px;
+  }
+  .toggle.active .rec { background: var(--card); }
+
+  /* ---- terrain option ---- */
+  .terrain-opt {
+    display: flex; align-items: flex-start; gap: 10px; margin-top: 10px;
+    padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--paper); cursor: pointer; user-select: none;
+    transition: opacity .15s, border-color .15s;
+  }
+  .terrain-opt:hover { border-color: var(--line-strong); }
+  .terrain-opt input {
+    accent-color: var(--accent); width: 15px; height: 15px; margin: 3px 0 0; flex: none; cursor: pointer;
+  }
+  .terrain-opt .t-main { font-weight: 600; font-size: 0.9rem; color: var(--ink); }
+  .terrain-opt .t-note { display: block; font-size: 0.78rem; color: var(--muted); }
+  .terrain-opt.disabled { opacity: .45; cursor: default; }
+  .terrain-opt.disabled input { cursor: default; }
+
+  /* ---- generate button ---- */
+  button.generate {
+    width: 100%; margin-top: 20px; padding: 15px;
+    font-size: 1.02rem; font-weight: 600; font-family: var(--sans);
+    color: #fff; background: var(--accent); border: 1px solid var(--accent-ink);
+    border-radius: var(--radius); cursor: pointer; transition: background .15s, opacity .15s;
+  }
+  button.generate:hover:not(:disabled) { background: var(--accent-ink); }
+  button.generate:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---- status ---- */
+  .status { margin-top: 16px; font-size: 0.92rem; font-family: var(--mono); display: none; align-items: center; gap: 10px; }
+  .status.show { display: flex; }
+  .status.error { color: var(--error); }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--line-strong);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- sections ---- */
+  section.block { margin-top: 28px; }
+  section.block[hidden] { display: none; }
+  .section-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px;
+  }
+  .section-head h2 {
+    font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--muted); margin: 0; font-weight: 600;
+  }
+
+  /* ---- iteration bar ---- */
+  .iterbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px dashed var(--line-strong); border-radius: var(--radius);
+    padding: 12px 14px; background: var(--card);
+  }
+  .iterbar .area-name { font-weight: 600; font-size: 1rem; }
+  .iterbar .area-name::before { content: "◍ "; color: var(--accent); }
+  .iterbar .grow { flex: 1; }
+  .linkbtn {
+    background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.86rem;
+    font-family: var(--mono); letter-spacing: 0.02em; padding: 4px 6px; border-radius: 3px;
+  }
+  .linkbtn:hover { background: var(--accent-soft); }
+  .linkbtn:disabled { color: var(--faint); cursor: default; background: none; }
+  .editrow { display: flex; gap: 8px; width: 100%; }
+  .editrow input {
+    flex: 1; padding: 10px 12px; font-size: 1rem; font-family: var(--sans);
+    border: 1px solid var(--accent); border-radius: var(--radius); background: var(--paper); color: var(--ink); outline: none;
+  }
+  .editrow button {
+    padding: 0 16px; font-weight: 600; font-family: var(--sans); color: #fff; background: var(--accent);
+    border: none; border-radius: var(--radius); cursor: pointer;
+  }
+  .editrow button:hover { background: var(--accent-ink); }
+
+  /* ---- height-provenance note ---- */
+  .heights-note {
+    margin-top: 12px; padding: 11px 14px;
+    border: 1px solid var(--line); border-left: 3px solid var(--accent-ink);
+    border-radius: var(--radius); background: var(--card);
+    color: var(--muted); font-size: 0.86rem; line-height: 1.45;
+  }
+  .heights-note strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- download cards ---- */
+  .downloads { display: grid; gap: 10px; }
+  .dl {
+    display: flex; align-items: center; gap: 14px;
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; background: var(--card);
+  }
+  .dl .ext {
+    flex: none; width: 46px; height: 46px; border-radius: var(--radius);
+    background: var(--accent-soft); color: var(--accent-ink);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 0.62rem; font-weight: 600; letter-spacing: 0.04em;
+    border: 1px solid var(--line);
+  }
+  .dl .meta { flex: 1; min-width: 0; }
+  .dl .meta .name { font-weight: 600; font-size: 0.95rem; word-break: break-all; }
+  .dl .meta .desc { font-size: 0.78rem; color: var(--muted); font-family: var(--mono); }
+  .dl a.btn {
+    flex: none; text-decoration: none; font-weight: 600; font-size: 0.86rem; font-family: var(--sans);
+    color: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius); padding: 8px 14px;
+    transition: background .15s, color .15s;
+  }
+  .dl a.btn:hover { background: var(--accent); color: #fff; }
+  .dl.pending { opacity: 0.6; }
+  .dl.pending a.btn { pointer-events: none; opacity: 0.5; }
+  .dl.failed { border-color: var(--error); }
+  .dl.failed .ext { background: #f6e7e4; color: var(--error); }
+
+  /* ---- brief ---- */
+  .brief-panel { animation: fade .5s ease both; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .brief-body {
+    border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius);
+    background: var(--card); padding: 20px 22px; font-size: 1.0rem; line-height: 1.66; white-space: pre-wrap;
+  }
+  .brief-body.muted-note { color: var(--muted); font-style: italic; border-left-color: var(--line-strong); }
+  .brief-actions { display: flex; gap: 6px; align-items: center; }
+  .brief-actions .sep { color: var(--line-strong); }
+
+  /* ---- site analysis ---- */
+  .analysis-intro { margin: 0 0 16px; color: var(--muted); font-size: 0.92rem; }
+  .analysis-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ana-chip {
+    appearance: none; cursor: pointer; font-family: var(--sans); font-size: 0.92rem; font-weight: 600;
+    color: var(--ink); background: var(--card); border: 1px solid var(--line-strong);
+    border-radius: 999px; padding: 8px 16px; transition: background .15s, border-color .15s, color .15s;
+  }
+  .ana-chip:hover { border-color: var(--accent); }
+  .ana-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+  .analysis-summary { margin: 18px 0 6px; font-size: 0.98rem; }
+  .analysis-source {
+    margin: 0; font-size: 0.8rem; color: var(--muted); font-family: var(--mono);
+    line-height: 1.6; border-left: 2px solid var(--line-strong); padding-left: 10px;
+  }
+  .param-group { margin-top: 18px; }
+  .param-group > .label { margin-bottom: 8px; }
+  .param-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .param-chip {
+    cursor: pointer; user-select: none; font-size: 0.85rem; font-family: var(--mono);
+    color: var(--muted); background: var(--paper); border: 1px solid var(--line-strong);
+    border-radius: var(--radius); padding: 6px 11px; transition: all .12s;
+  }
+  .param-chip.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .param-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 16px;
+    font-size: 0.88rem; cursor: pointer; user-select: none; }
+  .param-toggle input { accent-color: var(--accent); width: 15px; height: 15px; margin: 2px 0 0; }
+  .param-toggle .pt-note { display: block; color: var(--muted); font-size: 0.78rem; }
+  .analysis-notes { margin-top: 14px; display: grid; gap: 8px; }
+  .analysis-notes .note {
+    font-size: 0.82rem; color: var(--muted); line-height: 1.55;
+    border-left: 3px solid var(--line-strong); padding: 2px 0 2px 11px;
+  }
+  .analysis-notes .note.key { border-left-color: var(--accent); color: var(--ink); }
+
+  /* ---- footer ---- */
+  footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line);
+    font-size: 0.8rem; color: var(--muted); font-family: var(--mono); letter-spacing: 0.01em; line-height: 1.7;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+  .inline-spin { display: inline-flex; vertical-align: -2px; margin-left: 6px; }
+</style>
+<!-- Google Analytics (GA4) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-6VSPZVNF5V"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-6VSPZVNF5V');
+</script>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 class="wordmark">SiteGrab <span class="tick">OSM → CAD</span></h1>
+    <p class="sub">Pull real site data for any area in the world.</p>
+  </header>
+
+  <div class="card">
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="map" type="button">Draw on map<span class="rec-dot">Recommended</span></button>
+      <button class="tab" data-tab="name" type="button">Search by name</button>
+    </div>
+
+    <!-- DRAW ON MAP -->
+    <div class="tabpane" id="pane-map">
+      <label class="label">Find &amp; draw your site</label>
+      <div class="map-search">
+        <input type="text" id="mapSearch" autocomplete="off" spellcheck="false"
+               placeholder="Search for a place to zoom to…" />
+        <button id="mapSearchBtn" type="button">Search</button>
+      </div>
+      <div id="map"></div>
+      <div class="readout" id="readout">
+        <span class="hint">Use the ▭ rectangle tool (top-left of the map), then drag to draw your site.</span>
+      </div>
+      <div class="maptools">
+        <button class="linkbtn" id="clearBox" type="button" disabled>Clear box</button>
+      </div>
+    </div>
+
+    <!-- SEARCH BY NAME -->
+    <div class="tabpane" id="pane-name" hidden>
+      <label class="label" for="area">Area</label>
+      <input type="text" id="area" autocomplete="off" spellcheck="false" placeholder="Shibuya, Tokyo" />
+    </div>
+
+    <div class="formats" id="formats">
+      <div class="toggle active" data-fmt="combined" role="checkbox" aria-checked="true" tabindex="0">
+        <input type="checkbox" checked />
+        <span class="rec">Recommended</span>
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="t-title">Combined Rhino File</span>
+        <span class="t-sub">.3dm · 3D + 2D aligned</span>
+      </div>
+      <div class="toggle" data-fmt="rhino" role="checkbox" aria-checked="false" tabindex="0">
+        <input type="checkbox" />
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="t-title">3D Massing only</span>
+        <span class="t-sub">.3dm · buildings</span>
+      </div>
+      <div class="toggle" data-fmt="dxf" role="checkbox" aria-checked="false" tabindex="0">
+        <input type="checkbox" />
+        <span class="box"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6.5L5 9.5L10 3" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="t-title">2D Linework only</span>
+        <span class="t-sub">.dxf · basemap</span>
+      </div>
+    </div>
+
+    <label class="terrain-opt" id="terrainOpt">
+      <input type="checkbox" id="terrainChk" checked />
+      <span>
+        <span class="t-main">Include terrain</span>
+        <span class="t-note">Real topography in the combined file: ground mesh, contour lines,
+        and buildings seated on the slope. Adds a little fetch time — untick for a flat model.</span>
+      </span>
+    </label>
+
+    <button class="generate" id="generate">Generate Site Data</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <!-- iteration bar -->
+  <section class="block" id="iterSection" hidden>
+    <div class="iterbar" id="iterbar">
+      <span class="area-name" id="iterArea"></span>
+      <span class="grow"></span>
+      <button class="linkbtn" id="editBtn">Edit area</button>
+      <button class="linkbtn" id="freshBtn">Start fresh</button>
+    </div>
+  </section>
+
+  <!-- downloads -->
+  <section class="block" id="resultsSection" hidden>
+    <div class="section-head"><h2>Files</h2></div>
+    <div class="downloads" id="downloads"></div>
+    <div class="heights-note" id="heightsNote" hidden></div>
+  </section>
+
+  <!-- design brief -->
+  <section class="block" id="briefSection" hidden>
+    <div class="section-head">
+      <h2>Design Brief</h2>
+      <div class="brief-actions" id="briefActions"></div>
+    </div>
+    <div class="brief-body" id="briefBody"></div>
+  </section>
+
+  <!-- ====================== SITE ANALYSIS ====================== -->
+  <section class="block" id="analysisSection">
+    <div class="section-head">
+      <h2>Site Analysis</h2>
+      <span class="rec-dot" style="font-family:var(--mono);font-size:.55rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)">New</span>
+    </div>
+    <div class="card">
+      <p class="analysis-intro">Run an analysis on the site you've chosen above
+        (the drawn box or the area name). Outputs align with the combined model in
+        the same UTM coordinates — drop them straight onto it.</p>
+      <div class="analysis-list" id="analysisList">
+        <span class="hint" style="color:var(--faint);font-size:.9rem">Loading analyses…</span>
+      </div>
+
+      <div id="analysisDetail" hidden>
+        <p class="analysis-summary" id="analysisSummary"></p>
+        <p class="analysis-source" id="analysisSource"></p>
+
+        <div id="analysisParams"></div>
+
+        <label class="label" style="margin-top:18px">Output format</label>
+        <div class="formats" id="analysisFormats"></div>
+
+        <button class="generate" id="analyzeBtn">Generate analysis</button>
+        <div class="status" id="analysisStatus"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- analysis downloads -->
+  <section class="block" id="analysisResultsSection" hidden>
+    <div class="section-head"><h2>Analysis Files</h2></div>
+    <div class="downloads" id="analysisDownloads"></div>
+    <div class="analysis-notes" id="analysisNotes"></div>
+  </section>
+
+  <footer>
+    Built on OpenStreetMap data. For personal and light professional use.<br />
+    Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
+    Geocoding &amp; search by <a href="https://nominatim.org/" target="_blank" rel="noopener">Nominatim</a>.<br />
+    Elevation from <a href="https://registry.opendata.aws/terrain-tiles/" target="_blank" rel="noopener">AWS Terrain Tiles</a>
+    (3DEP/SRTM/GMTED2010 courtesy of the U.S. Geological Survey; ETOPO1 courtesy of NOAA).
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+        crossorigin="" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"
+        crossorigin="" referrerpolicy="no-referrer"></script>
+<script>
+(function () {
+  "use strict";
+
+  const FORMAT_META = {
+    combined: { label: "Combined Rhino File", ext: "3DM", desc: "3D massing + 2D linework + terrain, aligned" },
+    rhino:    { label: "3D Massing",          ext: "3DM", desc: "lean massing model" },
+    dxf:      { label: "2D Linework",          ext: "DXF", desc: "detailed 2D basemap" },
+  };
+  const PLACEHOLDERS = ["Shibuya, Tokyo", "Marais, Paris", "Brera, Milan", "Hackney Wick, London", "Downtown Brooklyn"];
+  const LOADING_MSGS = [
+    "Pulling OpenStreetMap data…",
+    "Fetching elevation tiles…",
+    "Building the terrain surface…",
+    "Seating buildings on the ground…",
+    "Laying out 2D linework…",
+    "Aligning and writing Rhino file…",
+    "Almost there — large areas take a moment…",
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const areaInput = $("area"), genBtn = $("generate"), statusEl = $("status");
+  const iterSection = $("iterSection"), iterArea = $("iterArea"), iterbar = $("iterbar");
+  const resultsSection = $("resultsSection"), downloads = $("downloads");
+  const briefSection = $("briefSection"), briefBody = $("briefBody"), briefActions = $("briefActions");
+  const mapSearch = $("mapSearch"), mapSearchBtn = $("mapSearchBtn"), readout = $("readout"), clearBoxBtn = $("clearBox");
+
+  let blobUrls = [];          // live object URLs, revoked on reset
+  let currentArea = "";       // display label of the last successful run
+  let currentBriefArea = "";  // name sent to /brief (may differ from label on the box path)
+  let currentKind = "name";   // 'name' | 'bbox' of the last successful run
+  let briefMode = "short";
+  let busy = false;
+
+  let activeTab = "map";      // 'map' | 'name'
+  let drawnBounds = null;     // Leaflet LatLngBounds of the current rectangle, or null
+  let lastSearchLabel = "";   // last successful map search term (brief fallback)
+
+  // ---- tabs ----
+  document.querySelectorAll("#tabs .tab").forEach((tab) => {
+    tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+  });
+  function switchTab(name) {
+    activeTab = name;
+    document.querySelectorAll("#tabs .tab").forEach((t) =>
+      t.classList.toggle("active", t.dataset.tab === name));
+    $("pane-map").hidden = name !== "map";
+    $("pane-name").hidden = name !== "name";
+    clearStatus();
+    if (name === "map" && map) { setTimeout(() => map.invalidateSize(), 0); }
+    if (name === "name") areaInput.focus();
+  }
+
+  // ---- cycling placeholder (name input only) ----
+  let phIdx = 0;
+  setInterval(() => {
+    if (document.activeElement === areaInput || areaInput.value) return;
+    phIdx = (phIdx + 1) % PLACEHOLDERS.length;
+    areaInput.placeholder = PLACEHOLDERS[phIdx];
+  }, 3200);
+
+  // ========================================================================
+  //  MAP
+  // ========================================================================
+  let map = null, rectLayer = null;
+
+  function initMap() {
+    map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([25.078, 55.14], 14);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+
+    // Rectangle-only toolbar. Keeping the draw tool on the toolbar (rather than a
+    // permanently-armed drawer) leaves normal drag-to-pan / scroll-to-zoom intact;
+    // the user clicks the ▭ tool, then drags to draw. Every other tool is disabled
+    // and only one rectangle exists at a time (a new draw replaces the old one).
+    const drawControl = new L.Control.Draw({
+      position: "topleft",
+      draw: {
+        polyline: false, polygon: false, circle: false, marker: false, circlemarker: false,
+        rectangle: {
+          shapeOptions: { color: "#2f4a6b", weight: 2, fillColor: "#2f4a6b", fillOpacity: 0.12 },
+          metric: true,
+        },
+      },
+      edit: false,
+    });
+    map.addControl(drawControl);
+
+    map.on(L.Draw.Event.CREATED, (e) => setRectangle(e.layer));
+  }
+
+  function setRectangle(layer) {
+    if (rectLayer) map.removeLayer(rectLayer);
+    rectLayer = layer;
+    map.addLayer(rectLayer);
+    drawnBounds = rectLayer.getBounds();
+    clearBoxBtn.disabled = false;
+    updateReadout();
+  }
+
+  function clearBox() {
+    if (rectLayer) { map.removeLayer(rectLayer); rectLayer = null; }
+    drawnBounds = null;
+    clearBoxBtn.disabled = true;
+    updateReadout();
+  }
+  clearBoxBtn.addEventListener("click", clearBox);
+
+  // ---- size readout + estimate (latitude-corrected, same formula as backend) ----
+  function bboxDimsKm(b) {
+    const s = b.getSouth(), n = b.getNorth(), w = b.getWest(), e = b.getEast();
+    const meanLat = ((s + n) / 2) * Math.PI / 180;
+    const width = Math.abs(e - w) * 111.32 * Math.cos(meanLat);
+    const height = Math.abs(n - s) * 111.32;
+    return { width, height };
+  }
+  function fmtKm(v) { return (v < 10 ? v.toFixed(1) : Math.round(v)) + " km"; }
+
+  function updateReadout() {
+    if (!drawnBounds) {
+      readout.innerHTML = '<span class="hint">Use the ▭ rectangle tool (top-left of the map), then drag to draw your site.</span>';
+      return;
+    }
+    const { width, height } = bboxDimsKm(drawnBounds);
+    const maxSide = Math.max(width, height);
+    let cls, msg;
+    if (maxSide < 3) {
+      cls = "light"; msg = "Light — fast generation.";
+    } else if (maxSide <= 6) {
+      cls = "moderate"; msg = "Moderate — may take a minute.";
+    } else {
+      cls = "large";
+      msg = "Large — this may take several minutes and could be heavy on the free server. " +
+            "Consider a smaller box for faster results.";
+    }
+    readout.innerHTML =
+      '<span class="dims">' + fmtKm(width) + " × " + fmtKm(height) + '</span>' +
+      '<span class="grow"></span>' +
+      '<span class="est ' + cls + '">' + msg + '</span>';
+  }
+
+  // ---- Nominatim search: fly the map to a place ----
+  async function doSearch() {
+    const q = mapSearch.value.trim();
+    if (!q) { mapSearch.focus(); return; }
+    mapSearchBtn.disabled = true;
+    const oldLabel = mapSearchBtn.textContent;
+    mapSearchBtn.textContent = "…";
+    clearStatus();
+    try {
+      const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" +
+                  encodeURIComponent(q);
+      const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!resp.ok) throw new Error("search failed");
+      const data = await resp.json();
+      if (!data || !data.length) { showError('No place found for "' + q + '".'); return; }
+      lastSearchLabel = data[0].display_name || q;
+      // Nominatim boundingbox order: [south, north, west, east]
+      const bb = data[0].boundingbox;
+      if (bb && bb.length === 4) {
+        const s = +bb[0], n = +bb[1], w = +bb[2], e = +bb[3];
+        map.fitBounds([[s, w], [n, e]], { maxZoom: 16 });
+      } else {
+        map.setView([+data[0].lat, +data[0].lon], 15);
+      }
+    } catch (e) {
+      showError("Location search is unavailable right now. Try again shortly.");
+    } finally {
+      mapSearchBtn.disabled = false;
+      mapSearchBtn.textContent = oldLabel;
+    }
+  }
+  mapSearchBtn.addEventListener("click", doSearch);
+  mapSearch.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doSearch(); } });
+
+  // ---- reverse geocode a point -> a human label (for the brief on the box path) ----
+  async function reverseGeocode(lat, lon) {
+    try {
+      const url = "https://nominatim.openstreetmap.org/reverse?format=json&zoom=14&lat=" +
+                  lat + "&lon=" + lon;
+      const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+      if (!resp.ok) return "";
+      const data = await resp.json();
+      return (data && data.display_name) || "";
+    } catch (e) { return ""; }
+  }
+
+  // ========================================================================
+  //  TOGGLE CARDS
+  // ========================================================================
+  document.querySelectorAll("#formats .toggle").forEach((tog) => {
+    const cb = tog.querySelector("input");
+    const flip = () => {
+      cb.checked = !cb.checked;
+      tog.classList.toggle("active", cb.checked);
+      tog.setAttribute("aria-checked", cb.checked ? "true" : "false");
+      updateTerrainOpt();
+    };
+    tog.addEventListener("click", flip);
+    tog.addEventListener("keydown", (e) => {
+      if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); }
+    });
+  });
+  function selectedFormats() {
+    return [...document.querySelectorAll("#formats .toggle")]
+      .filter((t) => t.querySelector("input").checked)
+      .map((t) => t.dataset.fmt);
+  }
+
+  // ---- terrain option (applies to the combined file only) ----
+  const terrainChk = $("terrainChk"), terrainOpt = $("terrainOpt");
+  function updateTerrainOpt() {
+    const relevant = selectedFormats().includes("combined");
+    terrainOpt.classList.toggle("disabled", !relevant);
+    terrainChk.disabled = !relevant;
+  }
+  updateTerrainOpt();
+
+  // ---- status helpers ----
+  let loadTimer = null;
+  function startLoading() {
+    let i = 0;
+    statusEl.className = "status show";
+    statusEl.innerHTML = '<span class="spinner"></span><span id="loadmsg">' + LOADING_MSGS[0] + "</span>";
+    loadTimer = setInterval(() => {
+      i = (i + 1) % LOADING_MSGS.length;
+      const m = $("loadmsg"); if (m) m.textContent = LOADING_MSGS[i];
+    }, 2600);
+  }
+  function stopLoading() { if (loadTimer) { clearInterval(loadTimer); loadTimer = null; } statusEl.className = "status"; statusEl.innerHTML = ""; }
+  function clearStatus() { stopLoading(); }
+  function showError(msg) { stopLoading(); statusEl.className = "status show error"; statusEl.textContent = "⚠  " + msg; }
+
+  // ---- filename from Content-Disposition ----
+  function filenameFrom(resp, fallback) {
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    return m ? decodeURIComponent(m[1]) : fallback;
+  }
+  // Height provenance (v9, Option C): read the combined response header and
+  // show, honestly, how many heights are surveyed vs estimated.
+  const heightsNoteEl = $("heightsNote");
+  function showHeightsNote(resp) {
+    try {
+      const raw = resp.headers.get("X-SiteGrab-Heights");
+      if (!raw) { heightsNoteEl.hidden = true; return; }
+      const p = JSON.parse(decodeURIComponent(raw));
+      const real = (p.prov_osm || 0) + (p.prov_lidar || 0);
+      const total = real + (p.prov_estimated || 0);
+      const lead = p.prov_lidar
+        ? `<strong>${real} of ${total} building heights are surveyed</strong> ` +
+          `(${p.prov_osm} OSM tag, ${p.prov_lidar} LiDAR), ${p.prov_estimated} estimated.`
+        : `<strong>${real} of ${total} building heights are surveyed</strong> (OSM tag), ` +
+          `${p.prov_estimated} estimated.`;
+      // Honest second line: WHY heights fell back to estimates. Three regimes —
+      // LiDAR ran, LiDAR skipped to fit memory (governor), or no coverage.
+      let why;
+      if (p.lidar_available) {
+        why = ' Surveyed heights are on the <code>BUILDINGS_*_real</code> layers, ' +
+          'estimates on <code>BUILDINGS_*_estimated</code> — so you can see which to trust.';
+      } else if (p.lidar_governed) {
+        why = ' LiDAR was skipped on this large site to stay within the free-tier ' +
+          'memory budget, so untagged heights are type-estimated. Real heights sit on ' +
+          'the <code>BUILDINGS_*_real</code> layers, estimates on <code>BUILDINGS_*_estimated</code>.';
+      } else {
+        why = ' Free LiDAR covers England only — outside it (or when the service is ' +
+          'unreachable) untagged heights are type-estimated. Real heights sit on the ' +
+          '<code>BUILDINGS_*_real</code> layers, estimates on <code>BUILDINGS_*_estimated</code>.';
+      }
+      heightsNoteEl.innerHTML = lead + why;
+      heightsNoteEl.hidden = false;
+    } catch (_) { heightsNoteEl.hidden = true; }
+  }
+  function prettySize(n) {
+    if (!n && n !== 0) return "";
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(0) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+
+  // ---- render one download card ----
+  function makeCard(fmt) {
+    const meta = FORMAT_META[fmt];
+    const el = document.createElement("div");
+    el.className = "dl pending";
+    el.innerHTML =
+      '<div class="ext">' + meta.ext + '</div>' +
+      '<div class="meta"><div class="name">' + meta.label + '</div>' +
+      '<div class="desc">building…</div></div>' +
+      '<a class="btn">Download</a>';
+    return el;
+  }
+  function fillCard(el, fmt, filename, url, size) {
+    const meta = FORMAT_META[fmt];
+    el.className = "dl";
+    el.querySelector(".name").textContent = filename;
+    el.querySelector(".desc").textContent = meta.desc + (size ? "  ·  " + prettySize(size) : "");
+    const a = el.querySelector("a.btn");
+    a.href = url; a.download = filename;
+  }
+  function failCard(el, msg) {
+    el.className = "dl failed";
+    el.querySelector(".desc").textContent = msg;
+    el.querySelector("a.btn").remove();
+  }
+
+  // ========================================================================
+  //  GENERATE
+  // ========================================================================
+  // source = { kind:'name', area, label } | { kind:'bbox', bbox:{s,w,n,e}, center:{lat,lng}, label }
+  async function generate(source, formats) {
+    busy = true; genBtn.disabled = true;
+    startLoading();
+
+    const haveOld = downloads.children.length > 0;
+    const target = haveOld ? document.createElement("div") : downloads;
+    if (!haveOld) resultsSection.hidden = false;
+
+    const cards = {};
+    formats.forEach((f) => { cards[f] = makeCard(f); target.appendChild(cards[f]); });
+
+    const newUrls = [];
+    let okCount = 0;
+
+    // Payload shared by every format request: a drawn bbox skips geocoding.
+    // The terrain flag only affects the combined build; harmless elsewhere.
+    const payloadBase = source.kind === "bbox"
+      ? { bbox: source.bbox, terrain: terrainChk.checked }
+      : { area: source.area, terrain: terrainChk.checked };
+    const fallbackBase = source.kind === "bbox" ? "site" : source.area;
+
+    // Run sequentially to stay polite to the public OSM servers.
+    for (const fmt of formats) {
+      try {
+        const resp = await fetch("/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({ formats: [fmt] }, payloadBase)),
+        });
+        if (!resp.ok) {
+          let msg = "HTTP " + resp.status;
+          try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
+          failCard(cards[fmt], msg);
+          continue;
+        }
+        // Height provenance (combined only): show which heights are surveyed.
+        if (fmt === "combined") showHeightsNote(resp);
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        newUrls.push(url);
+        fillCard(cards[fmt], fmt, filenameFrom(resp, fallbackBase + "." + FORMAT_META[fmt].ext.toLowerCase()), url, blob.size);
+        okCount++;
+      } catch (e) {
+        failCard(cards[fmt], "Network error");
+      }
+    }
+
+    const oldUrls = blobUrls;
+    blobUrls = newUrls;
+    if (haveOld) {
+      downloads.innerHTML = "";
+      while (target.firstChild) downloads.appendChild(target.firstChild);
+    }
+    oldUrls.forEach((u) => URL.revokeObjectURL(u));
+
+    resultsSection.hidden = false;
+    stopLoading();
+    busy = false; genBtn.disabled = false;
+
+    if (okCount === 0) { showError("Could not generate any files. See the cards above."); return false; }
+
+    // Resolve a display label + brief subject. For the box path, reverse-geocode
+    // the centroid so the iteration bar and design brief still name a real place.
+    currentKind = source.kind;
+    let label = source.label || "";
+    let briefArea = label;
+    if (source.kind === "bbox") {
+      const rn = await reverseGeocode(source.center.lat, source.center.lng);
+      if (rn) { label = rn; briefArea = rn; }
+      if (!label) {
+        label = "Custom area (" + source.center.lat.toFixed(4) + ", " + source.center.lng.toFixed(4) + ")";
+        briefArea = label;
+      }
+    }
+    currentArea = label;
+    currentBriefArea = briefArea;
+    showIterBar(label);
+    loadBrief("short");
+    return true;
+  }
+
+  // ---- iteration bar ----
+  function showIterBar(label) {
+    iterSection.hidden = false;
+    restoreIterButtons();
+  }
+  function restoreIterButtons() {
+    // The text-edit shortcut only makes sense on the name path; the box path
+    // edits its area by redrawing on the map, so we offer "Start fresh" only.
+    const editBtn = currentKind === "name"
+      ? '<button class="linkbtn" id="editBtn">Edit area</button>' : "";
+    iterbar.innerHTML =
+      '<span class="area-name" id="iterArea"></span><span class="grow"></span>' +
+      editBtn +
+      '<button class="linkbtn" id="freshBtn">Start fresh</button>';
+    $("iterArea").textContent = currentArea;
+    if (currentKind === "name") $("editBtn").addEventListener("click", enterEdit);
+    $("freshBtn").addEventListener("click", startFresh);
+  }
+  function enterEdit() {
+    iterbar.innerHTML =
+      '<div class="editrow"><input type="text" id="editInput" value="" /><button id="editGo">Regenerate</button></div>';
+    const inp = $("editInput"); inp.value = currentArea; inp.focus(); inp.select();
+    const go = () => {
+      const v = inp.value.trim();
+      if (!v) { inp.focus(); return; }
+      const fmts = selectedFormats();
+      if (!fmts.length) { restoreIterButtons(); showError("Select at least one format above."); return; }
+      restoreIterButtons();
+      generate({ kind: "name", area: v, label: v }, fmts);
+    };
+    $("editGo").addEventListener("click", go);
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); if (e.key === "Escape") restoreIterButtons(); });
+  }
+  function startFresh() {
+    revokeAll();
+    currentArea = ""; currentBriefArea = "";
+    areaInput.value = "";
+    clearBox();
+    iterSection.hidden = true;
+    resultsSection.hidden = true;
+    briefSection.hidden = true;
+    downloads.innerHTML = "";
+    heightsNoteEl.hidden = true;
+    revokeAnalysis();
+    analysisResultsSection.hidden = true;
+    analysisDownloads.innerHTML = "";
+    analysisNotes.innerHTML = "";
+    stopLoading();
+    if (activeTab === "name") areaInput.focus();
+  }
+  function revokeAll() { blobUrls.forEach((u) => URL.revokeObjectURL(u)); blobUrls = []; }
+
+  // ---- design brief ----
+  async function loadBrief(mode) {
+    briefMode = mode;
+    briefSection.hidden = false;
+    briefBody.className = "brief-body brief-panel";
+    briefBody.innerHTML = '<span style="color:var(--muted);font-family:var(--mono);font-size:.85rem">Composing a site analysis<span class="inline-spin"><span class="spinner"></span></span></span>';
+    briefActions.innerHTML = "";
+    try {
+      const resp = await fetch("/brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ area: currentBriefArea, display_name: currentBriefArea, mode }),
+      });
+      if (!resp.ok) {
+        let msg = "The design brief is unavailable right now.";
+        try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
+        briefBody.className = "brief-body brief-panel muted-note";
+        briefBody.textContent = msg;
+        return;
+      }
+      const data = await resp.json();
+      briefBody.className = "brief-body brief-panel";
+      briefBody.textContent = (data.brief || "").trim();
+      renderBriefActions();
+    } catch (e) {
+      briefBody.className = "brief-body brief-panel muted-note";
+      briefBody.textContent = "Network error while loading the design brief.";
+    }
+  }
+  function renderBriefActions() {
+    briefActions.innerHTML = "";
+    if (briefMode === "short") {
+      const expand = mkLink("Expand brief", () => loadBrief("long"));
+      briefActions.appendChild(expand);
+    }
+    const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+    briefActions.appendChild(sep);
+    briefActions.appendChild(mkLink("Regenerate", () => loadBrief(briefMode)));
+  }
+  function mkLink(text, fn) {
+    const b = document.createElement("button"); b.className = "linkbtn"; b.textContent = text;
+    b.addEventListener("click", fn); return b;
+  }
+
+  // ---- main generate trigger ----
+  function run() {
+    if (busy) return;
+    const fmts = selectedFormats();
+    if (!fmts.length) { showError("Select at least one output format."); return; }
+
+    if (activeTab === "map") {
+      if (!drawnBounds) { showError("Draw a rectangle on the map to set your site."); return; }
+      const b = drawnBounds;
+      const bbox = { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
+      const c = b.getCenter();
+      generate({ kind: "bbox", bbox, center: { lat: c.lat, lng: c.lng }, label: lastSearchLabel }, fmts);
+    } else {
+      const area = areaInput.value.trim();
+      if (!area) { showError("Please enter an area name."); areaInput.focus(); return; }
+      generate({ kind: "name", area, label: area }, fmts);
+    }
+  }
+  genBtn.addEventListener("click", run);
+  areaInput.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+
+  // ========================================================================
+  //  SITE ANALYSIS  (data-driven from /analyses; Sun Path is the first module)
+  // ========================================================================
+  const analysisList = $("analysisList"), analysisDetail = $("analysisDetail");
+  const analysisSummary = $("analysisSummary"), analysisSource = $("analysisSource");
+  const analysisParamsEl = $("analysisParams"), analysisFormatsEl = $("analysisFormats");
+  const analyzeBtn = $("analyzeBtn"), analysisStatusEl = $("analysisStatus");
+  const analysisResultsSection = $("analysisResultsSection");
+  const analysisDownloads = $("analysisDownloads"), analysisNotes = $("analysisNotes");
+
+  const DATE_LABELS = { summer_solstice: "Summer solstice", equinox: "Equinox", winter_solstice: "Winter solstice" };
+  let analyses = [], currentAnalysis = null;
+  let analysisParamState = {}, analysisFmtState = [];
+  let analysisBlobUrls = [], analysisBusy = false;
+
+  // Shared site resolver, used by the analysis flow (mirrors run()).
+  function resolveSource() {
+    if (activeTab === "map") {
+      if (!drawnBounds) return { error: "Draw a rectangle on the map above to set your site." };
+      const b = drawnBounds, c = b.getCenter();
+      return { kind: "bbox", label: lastSearchLabel,
+        bbox: { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() },
+        center: { lat: c.lat, lng: c.lng } };
+    }
+    const area = areaInput.value.trim();
+    if (!area) return { error: "Enter an area name above to set your site." };
+    return { kind: "name", area, label: area };
+  }
+
+  async function loadAnalyses() {
+    try {
+      const r = await fetch("/analyses");
+      if (!r.ok) throw new Error("unavailable");
+      analyses = (await r.json()).analyses || [];
+    } catch (e) { analyses = []; }
+    renderAnalysisList();
+  }
+  function renderAnalysisList() {
+    if (!analyses.length) {
+      analysisList.innerHTML = '<span class="hint" style="color:var(--faint);font-size:.9rem">Site analysis is unavailable right now.</span>';
+      return;
+    }
+    analysisList.innerHTML = "";
+    analyses.forEach((a) => {
+      const b = document.createElement("button");
+      b.className = "ana-chip"; b.type = "button"; b.textContent = a.name;
+      b.addEventListener("click", () => selectAnalysis(a.key));
+      analysisList.appendChild(b);
+    });
+    selectAnalysis(analyses[0].key);
+  }
+  function selectAnalysis(key) {
+    currentAnalysis = analyses.find((a) => a.key === key);
+    if (!currentAnalysis) return;
+    [...analysisList.children].forEach((c) =>
+      c.classList.toggle("active", c.textContent === currentAnalysis.name));
+    analysisDetail.hidden = false;
+    analysisSummary.textContent = currentAnalysis.summary;
+    analysisSource.textContent = "Data — " + currentAnalysis.data_source;
+    renderParams(currentAnalysis);
+    renderAnalysisFormats(currentAnalysis);
+  }
+  function chipLabel(name, val) {
+    if (name === "date_set") return DATE_LABELS[val] || val;
+    return val;
+  }
+  function renderParams(a) {
+    analysisParamsEl.innerHTML = "";
+    analysisParamState = {};
+    a.params.forEach((p) => {
+      analysisParamState[p.name] = Array.isArray(p.default) ? [...p.default] : p.default;
+      const g = document.createElement("div"); g.className = "param-group";
+      if (p.kind === "multichoice" || p.kind === "choice") {
+        g.innerHTML = '<span class="label">' + p.label + "</span>";
+        const wrap = document.createElement("div"); wrap.className = "param-chips";
+        p.choices.forEach((ch) => {
+          const c = document.createElement("span"); c.className = "param-chip"; c.textContent = chipLabel(p.name, ch);
+          if (analysisParamState[p.name].includes(ch)) c.classList.add("on");
+          c.addEventListener("click", () => {
+            const arr = analysisParamState[p.name], i = arr.indexOf(ch);
+            if (p.kind === "choice") { analysisParamState[p.name] = [ch];
+              [...wrap.children].forEach((x) => x.classList.toggle("on", x === c)); return; }
+            if (i >= 0) { arr.splice(i, 1); c.classList.remove("on"); }
+            else { arr.push(ch); c.classList.add("on"); }
+          });
+          wrap.appendChild(c);
+        });
+        g.appendChild(wrap);
+      } else if (p.kind === "bool") {
+        const lbl = document.createElement("label"); lbl.className = "param-toggle";
+        lbl.innerHTML = '<input type="checkbox"><span>' + p.label + "</span>";
+        const cb = lbl.querySelector("input"); cb.checked = !!p.default;
+        analysisParamState[p.name] = !!p.default;
+        cb.addEventListener("change", () => { analysisParamState[p.name] = cb.checked; });
+        g.appendChild(lbl);
+      }
+      analysisParamsEl.appendChild(g);
+    });
+  }
+  function renderAnalysisFormats(a) {
+    analysisFormatsEl.className = "param-chips";
+    analysisFormatsEl.innerHTML = "";
+    analysisFmtState = [...a.outputs];
+    a.outputs.forEach((f) => {
+      const c = document.createElement("span"); c.className = "param-chip on"; c.textContent = f.toUpperCase();
+      c.addEventListener("click", () => {
+        const i = analysisFmtState.indexOf(f);
+        if (i >= 0 && analysisFmtState.length > 1) { analysisFmtState.splice(i, 1); c.classList.remove("on"); }
+        else if (i < 0) { analysisFmtState.push(f); c.classList.add("on"); }
+      });
+      analysisFormatsEl.appendChild(c);
+    });
+  }
+
+  // ---- analysis status ----
+  let anaTimer = null;
+  // Per-analysis honest progress messaging (falls back to a generic set).
+  const ANA_MSGS_BY_KEY = {
+    sun_path: ["Resolving the site…", "Fetching building footprints…",
+      "Computing sun positions…", "Casting shadows…", "Writing aligned files…",
+      "Larger sites take a moment…"],
+    wind: ["Resolving the site…", "Fetching building footprints…",
+      "Fetching measured wind climatology (Open-Meteo)…",
+      "Building the wind rose…", "Tracing prevailing arrows + channels…",
+      "Indicative diagram, not a CFD simulation…", "Writing aligned files…"],
+  };
+  const ANA_MSGS_DEFAULT = ["Resolving the site…",
+    "Fetching site data…", "Running the analysis…", "Writing aligned files…",
+    "Larger sites take a moment…"];
+  function startAnaLoading() {
+    const msgs = (currentAnalysis && ANA_MSGS_BY_KEY[currentAnalysis.key])
+      || ANA_MSGS_DEFAULT;
+    let i = 0; analysisStatusEl.className = "status show";
+    analysisStatusEl.innerHTML = '<span class="spinner"></span><span id="anamsg">' + msgs[0] + "</span>";
+    anaTimer = setInterval(() => { i = (i + 1) % msgs.length; const m = $("anamsg"); if (m) m.textContent = msgs[i]; }, 2600);
+  }
+  function stopAnaLoading() { if (anaTimer) { clearInterval(anaTimer); anaTimer = null; } analysisStatusEl.className = "status"; analysisStatusEl.innerHTML = ""; }
+  function showAnaError(msg) { stopAnaLoading(); analysisStatusEl.className = "status show error"; analysisStatusEl.textContent = "⚠  " + msg; }
+
+  function renderAnaNotes(resp) {
+    analysisNotes.innerHTML = "";
+    let notes = [];
+    try { const h = resp.headers.get("X-SiteGrab-Notes"); if (h) notes = JSON.parse(decodeURIComponent(h)); } catch (_) {}
+    notes.forEach((n, i) => {
+      const d = document.createElement("div"); d.className = "note" + (i === 0 ? " key" : ""); d.textContent = n;
+      analysisNotes.appendChild(d);
+    });
+  }
+
+  async function analyze() {
+    if (analysisBusy || !currentAnalysis) return;
+    const src = resolveSource();
+    if (src.error) { showAnaError(src.error); return; }
+    if (!analysisFmtState.length) { showAnaError("Pick at least one output format."); return; }
+
+    analysisBusy = true; analyzeBtn.disabled = true; startAnaLoading();
+    const params = {};
+    currentAnalysis.params.forEach((p) => { params[p.name] = analysisParamState[p.name]; });
+    const base = src.kind === "bbox" ? { bbox: src.bbox } : { area: src.area };
+    const payload = Object.assign({ analysis: currentAnalysis.key, formats: analysisFmtState, params }, base);
+
+    analysisResultsSection.hidden = false;
+    analysisDownloads.innerHTML = ""; analysisNotes.innerHTML = "";
+    const both = analysisFmtState.length > 1;
+    const ext = both ? "ZIP" : analysisFmtState[0].toUpperCase();
+    const card = document.createElement("div"); card.className = "dl pending";
+    card.innerHTML = '<div class="ext">' + ext + '</div><div class="meta"><div class="name">' +
+      currentAnalysis.name + '</div><div class="desc">running…</div></div><a class="btn">Download</a>';
+    analysisDownloads.appendChild(card);
+
+    try {
+      const resp = await fetch("/analysis", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        let msg = "HTTP " + resp.status;
+        try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
+        card.className = "dl failed"; card.querySelector(".desc").textContent = msg;
+        const b = card.querySelector("a.btn"); if (b) b.remove();
+        showAnaError(msg); analysisBusy = false; analyzeBtn.disabled = false; return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob); analysisBlobUrls.push(url);
+      const fname = filenameFrom(resp, currentAnalysis.key + "." + (both ? "zip" : analysisFmtState[0]));
+      card.className = "dl";
+      card.querySelector(".name").textContent = fname;
+      card.querySelector(".desc").textContent = (both ? "3DM + DXF bundle" : ext + " file") + "  ·  " + prettySize(blob.size);
+      const a = card.querySelector("a.btn"); a.href = url; a.download = fname;
+      renderAnaNotes(resp);
+    } catch (e) {
+      card.className = "dl failed"; card.querySelector(".desc").textContent = "Network error";
+      const b = card.querySelector("a.btn"); if (b) b.remove();
+      showAnaError("Network error while running the analysis.");
+    }
+    stopAnaLoading(); analysisBusy = false; analyzeBtn.disabled = false;
+  }
+  analyzeBtn.addEventListener("click", analyze);
+
+  function revokeAnalysis() { analysisBlobUrls.forEach((u) => URL.revokeObjectURL(u)); analysisBlobUrls = []; }
+
+  window.addEventListener("beforeunload", () => { revokeAll(); revokeAnalysis(); });
+
+  // ---- boot ----
+  if (window.L && L.map) {
+    initMap();
+  } else {
+    // Leaflet CDN failed to load: fall back to the name path so the app still works.
+    switchTab("name");
+    document.querySelector('#tabs .tab[data-tab="map"]').disabled = true;
+    $("pane-map").innerHTML =
+      '<p style="color:var(--muted);font-size:0.9rem">The map could not be loaded. ' +
+      'Use “Search by name” instead.</p>';
+  }
+  loadAnalyses();
+})();
+</script>
+</body>
+</html>

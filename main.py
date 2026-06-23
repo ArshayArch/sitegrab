@@ -9,14 +9,19 @@ Serves the single-page frontend and exposes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
+import time
 import zipfile
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -27,6 +32,23 @@ from build_rhino import build_rhino
 app = FastAPI(title="SiteGrab", description="OSM site data to Rhino / AutoCAD")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Serve everything under static/ (the hero image, any assets) at /static/*.
+# Drop the real Rhino screenshot in static/ as hero-model.png to replace the
+# placeholder the landing page ships with.
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# ---- waitlist (Pro early-access signups) -------------------------------------
+# Emails are stored server-side in waitlist.json (gitignored — never committed).
+# stdlib only, no database: a JSON list of {email, timestamp} is enough for now.
+WAITLIST_PATH = Path(__file__).parent / "waitlist.json"
+# Deliberately permissive but real: one @, a dot in the domain, no whitespace.
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Simple in-memory rate limit: max 3 signups per IP per hour. Resets on restart,
+# which is fine — this only blunts casual abuse, not a determined attacker.
+_WAITLIST_HITS: dict[str, list[float]] = defaultdict(list)
+WAITLIST_RATE_LIMIT = 3
+WAITLIST_RATE_WINDOW = 3600  # seconds
 
 # The spec named claude-sonnet-4-20250514, but that model is deprecated and
 # retires 2026-06-15 — its documented drop-in replacement is claude-sonnet-4-6.
@@ -87,6 +109,10 @@ class BriefRequest(BaseModel):
     mode: str = Field("short", description="'short' or 'long'")
 
 
+class WaitlistRequest(BaseModel):
+    email: str = Field(..., description="Email address to add to the Pro waitlist")
+
+
 def _slugify(name: str) -> str:
     """Filesystem-safe slug derived from the area name."""
     slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
@@ -144,12 +170,63 @@ def _provenance_headers(stats: dict | None) -> dict[str, str]:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
+    """Landing page — sells the product, captures Pro waitlist signups."""
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/app", response_class=HTMLResponse)
+def app_page() -> HTMLResponse:
+    """The tool itself — map, generate, analysis, downloads, design brief."""
+    return HTMLResponse((STATIC_DIR / "app.html").read_text(encoding="utf-8"))
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/waitlist")
+def waitlist(req: WaitlistRequest, request: Request) -> dict[str, bool]:
+    """Add an email to the Pro early-access waitlist (stored in waitlist.json).
+
+    Validates format, rejects duplicates, and rate-limits to 3/hour per IP.
+    stdlib only — no database. Each signup is appended with a UTC timestamp.
+    """
+    email = req.email.strip().lower()
+    if not email or len(email) > 254 or not EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="Please enter a valid email address.")
+
+    # Rate limit per client IP (in-memory; prune expired hits as we go).
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    hits = [t for t in _WAITLIST_HITS[ip] if now - t < WAITLIST_RATE_WINDOW]
+    if len(hits) >= WAITLIST_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many signups from this network. Please try again later.",
+        )
+
+    # Load the existing list (tolerate a missing or corrupt file by starting fresh).
+    entries: list[dict] = []
+    if WAITLIST_PATH.exists():
+        try:
+            loaded = json.loads(WAITLIST_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                entries = loaded
+        except (json.JSONDecodeError, OSError):
+            entries = []
+
+    if any(isinstance(e, dict) and e.get("email") == email for e in entries):
+        raise HTTPException(status_code=409, detail="You're already on the list.")
+
+    entry = {"email": email, "timestamp": datetime.now(timezone.utc).isoformat()}
+    entries.append(entry)
+    WAITLIST_PATH.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+
+    hits.append(now)
+    _WAITLIST_HITS[ip] = hits
+    print(f"[waitlist] {entry['timestamp']}  {email}  (total: {len(entries)})")
+    return {"success": True}
 
 
 @app.post("/generate")

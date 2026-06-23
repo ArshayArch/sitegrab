@@ -16,6 +16,9 @@ __pycache__/
 sitegrab_*/
 bench_results*.json
 
+# Waitlist signups — emails must never be committed to GitHub
+waitlist.json
+
 # OS / editor
 .DS_Store
 .idea/
