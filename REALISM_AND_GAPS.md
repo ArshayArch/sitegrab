@@ -744,3 +744,121 @@ rare fallback (40 of 4 670), all inside the free tier.
   sample at a stated ~2 m massing tolerance with a *visible* real/estimated split —
   never sold as survey-grade per-building truth. The paid value is coverage, scale,
   and depth, never accuracy we can't stand behind.
+
+---
+
+## v10 — Landing page, pricing, waitlist (standing method: conjecture & refutation)
+
+v10 is the first version that is not about geometry. It adds a public face: a
+landing page at `/`, the tool moved to `/app`, and `/api/waitlist` — the first
+piece of real monetisation infrastructure. The standing method now points at a
+different target: not "is the model honest?" but "does the product convert a
+stranger into a signup?"
+
+### 1. Problem — what still reads as unfinished
+
+- **The hero is a placeholder.** The single most persuasive asset — a real Rhino
+  screenshot of a SiteGrab output — ships as a grey "[Add screenshot here]" box.
+  Until it is replaced, the page *tells* an architect the output is good and then
+  shows them nothing. The whole page's credibility rests on an image that does not
+  exist yet. This is the largest single gap and it is not a code problem.
+- **Zero social proof.** No names, no studios, no "used by", no count of files
+  generated. A serious architect's default is scepticism; nothing on the page
+  answers "has anyone I'd respect actually used this?"
+- **No motion.** TikTok traffic arrives primed for a *demonstration*. The page is
+  static; the one thing that actually sells this tool — watching a box on a map
+  become a Rhino model in two minutes — happens only if they leave and try it.
+- **The waitlist asks for faith, not money.** £8/mo "coming soon" with no card
+  capture measures stated intent, not willingness to pay. A waitlist signup is a
+  weak signal; we will over-read it.
+- **The free/Pro split is still drawn, not enforced.** The pricing table promises
+  LiDAR/area/priority tiers that no auth or billing system gates. The page now
+  *publicly commits* to a boundary the backend cannot hold.
+
+### 2. Conjectured solutions
+
+- **C1 — Real hero screenshot (+ a second "layers" detail shot).** Replace the
+  placeholder; add one close-up of the Rhino layer panel to prove the alignment claim.
+- **C2 — A 15–30s screen-capture video/GIF on the landing page.** Box → outputs →
+  Rhino. The demonstration TikTok promised, delivered above the fold.
+- **C3 — Stripe Checkout behind the Pro CTA** (capture card / pre-authorise), turning
+  the waitlist into a paid pre-order.
+- **C4 — Social proof block**: real signup count ("N models generated"), and 2–3
+  quotes from the LinkedIn/Reddit comments that already exist.
+- **C5 — One more headline analysis (sunlight-hours heatmap or views)** to widen the
+  "what it produces" story past sun/wind.
+- **C6 — LiDAR terrain surface** (the v9 heights win, extended to the ground).
+
+### 3. Criticism — attack each
+
+- **C1** is necessary but not sufficient, and it is *not falsifiable by building it* —
+  a great screenshot of a mediocre model still converts; a poor screenshot of a great
+  model does not. Its risk is that it raises the expectation bar (see §5). Cheapest,
+  highest-leverage, do first. **Falsifier:** signups don't move after a strong hero →
+  the bottleneck was never the image.
+- **C2** is the strongest conversion lever *for TikTok traffic specifically*, but it is
+  the most effort, and a janky screen-grab is worse than no video. It also risks
+  showing the cold-start wait honestly (a minus) or hiding it dishonestly (worse).
+  **Falsifier:** scroll-depth/heat data shows people leave before the video, or a
+  cohort with video converts no better than one without.
+- **C3** assumes the constraint is *commitment friction*, not *belief*. If people don't
+  yet believe the free tool, asking for a card converts worse than email and poisons
+  the funnel. Pre-orders for a not-built feature also carry refund/trust risk.
+  **Falsifier:** A/B card-capture vs email — if card-capture's absolute signup count is
+  a fraction of email's, the constraint was belief, not friction.
+- **C4** is high-trust-per-pixel but **fabrication-fragile**: invented testimonials or a
+  vanity "10,000 architects" would be caught and would destroy the exact credibility it
+  buys. Only deployable once *real* numbers/quotes exist, which is a chicken-and-egg
+  with launch. **Falsifier:** real metrics stay too small to show — then it's premature.
+- **C5/C6** deepen the product, not the conversion. They answer "is it good enough?"
+  for users *already* in `/app` — a retention/depth lever, mis-aimed at a top-of-funnel
+  problem. **Falsifier:** the drop-off is at the landing page, not inside the tool
+  (analytics will say which).
+
+### 4. Replacement — ranked shortlist for v11
+
+Ranked by **conversion impact × feasibility × monetisation potential**:
+
+1. **C1 — Real hero screenshot (+ layer detail).** Highest impact ÷ effort on the
+   board. Nothing else on the page works until the hero is real. Pure asset work.
+2. **C2 — Landing demo video/GIF.** The decisive lever for the actual traffic source
+   (TikTok). Higher effort, but it is the medium the audience arrives expecting.
+3. **C4 — Real social proof, deployed the moment metrics exist.** Cheap once the
+   numbers are real; gated only by having launched. Wire the "models generated"
+   counter now so the number is ready to show.
+4. **C3 — Stripe card-capture, as an A/B against email — not a replacement.** Run it
+   *after* C1/C2 lift belief, so the test measures friction in isolation. This is the
+   only item that turns intent into revenue.
+5. **C5/C6 — depth (sunlight heatmap / LiDAR terrain).** Real, but retention not
+   acquisition; sequence after the funnel's top is fixed.
+
+### 5. New problem — what a proper landing page creates
+
+**A landing page this serious manufactures an expectation of quality the tool must now
+live up to — and a public promise the backend has not yet kept.** Before v10 a visitor
+met the tool with no priors. Now they meet a page that *claims* "ready in two minutes,"
+"surveyed LiDAR heights," "open straight in Rhino" — and then they hit the free server's
+cold start, the England-only LiDAR boundary, the ~5km cap. Every gap between the
+landing-page promise and the `/app` reality is now a *felt* disappointment, not a
+neutral discovery. The pricing table makes this concrete: it publicly draws a free/Pro
+line that no auth or billing enforces, so the page is writing cheques v11's backend has
+to cash. The landing page didn't just add a front door — it raised the floor the product
+is now judged against.
+
+### Monetisation note — read the waitlist honestly
+
+The waitlist is the first conversion instrument, but it is a **weak signal measured in a
+noisy window.** The number that matters is *signups in the first two weeks after the
+TikTok push*. Interpret it as a diagnostic, not a scoreboard:
+
+- **Lots of traffic, few signups →** the bottleneck is the **landing page or the
+  product belief** (fix C1/C2 before anything else).
+- **Signups but no eventual conversion to paid →** the bottleneck is **price or the
+  Pro value proposition** (C3 tells you if it's friction or belief).
+- **Few even reach the page →** it's **distribution**, and none of C1–C6 is the
+  problem.
+
+The trap is treating a free, no-card email as proof of willingness to pay. It is proof
+of *curiosity*. Only C3 converts curiosity into a commitment we can bank — and it should
+be run as a measured A/B, after C1/C2, so we learn whether the constraint was ever money
+in the first place.
