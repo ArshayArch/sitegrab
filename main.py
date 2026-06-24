@@ -39,8 +39,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # ---- waitlist (Pro early-access signups) -------------------------------------
-# Emails are stored server-side in waitlist.json (gitignored — never committed).
-# stdlib only, no database: a JSON list of {email, timestamp} is enough for now.
+# Signups are appended to a Google Sheet (one row of [email, timestamp]) when the
+# GOOGLE_SHEETS_CREDENTIALS + GOOGLE_SHEET_ID env vars are set. If Sheets is not
+# configured or the connection fails, we fall back to a local waitlist.json file
+# (gitignored — never committed) so a signup is never silently lost.
 WAITLIST_PATH = Path(__file__).parent / "waitlist.json"
 # Deliberately permissive but real: one @, a dot in the domain, no whitespace.
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -185,12 +187,99 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+class _DuplicateEmail(Exception):
+    """Raised when an email is already present in the destination store."""
+
+
+def _sheets_configured() -> bool:
+    """True if both Google Sheets env vars are set (credentials + sheet id)."""
+    return bool(
+        os.environ.get("GOOGLE_SHEETS_CREDENTIALS")
+        and os.environ.get("GOOGLE_SHEET_ID")
+    )
+
+
+def _open_waitlist_worksheet():
+    """Authorize gspread from the service-account JSON and return the worksheet.
+
+    Reads GOOGLE_SHEETS_CREDENTIALS (a JSON string) and GOOGLE_SHEET_ID. Imported
+    lazily so the rest of the app runs even if gspread isn't installed.
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS"])
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open_by_key(os.environ["GOOGLE_SHEET_ID"]).sheet1
+
+
+def _append_to_waitlist_sheet(email: str, timestamp: str) -> None:
+    """Append [email, timestamp] as a new row to the Google Sheet.
+
+    Raises _DuplicateEmail if the email is already in column A. Any other
+    exception signals a Sheets failure and is left for the caller to handle.
+    """
+    worksheet = _open_waitlist_worksheet()
+    existing = {value.strip().lower() for value in worksheet.col_values(1)}
+    if email in existing:
+        raise _DuplicateEmail()
+    worksheet.append_row([email, timestamp], value_input_option="USER_ENTERED")
+
+
+def _append_to_waitlist_json(email: str, timestamp: str) -> int:
+    """Append a signup to waitlist.json (the fallback store).
+
+    Tolerates a missing or corrupt file by starting fresh. Raises _DuplicateEmail
+    if the email is already present. Returns the new total count.
+    """
+    entries: list[dict] = []
+    if WAITLIST_PATH.exists():
+        try:
+            loaded = json.loads(WAITLIST_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                entries = loaded
+        except (json.JSONDecodeError, OSError):
+            entries = []
+
+    if any(isinstance(e, dict) and e.get("email") == email for e in entries):
+        raise _DuplicateEmail()
+
+    entries.append({"email": email, "timestamp": timestamp})
+    WAITLIST_PATH.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    return len(entries)
+
+
+def _store_signup(email: str, timestamp: str) -> str:
+    """Persist a signup. Prefer Google Sheets; fall back to waitlist.json.
+
+    Returns the backend used ("sheet" or "json"). Re-raises _DuplicateEmail so
+    the caller can map it to a 409. A genuine duplicate is *not* a connection
+    failure, so it does not trigger the fallback.
+    """
+    if _sheets_configured():
+        try:
+            _append_to_waitlist_sheet(email, timestamp)
+            return "sheet"
+        except _DuplicateEmail:
+            raise
+        except Exception as ex:  # noqa: BLE001 — any Sheets failure -> JSON fallback
+            print(
+                f"[waitlist] Google Sheets unavailable ({ex!r}); "
+                "falling back to waitlist.json"
+            )
+    _append_to_waitlist_json(email, timestamp)
+    return "json"
+
+
 @app.post("/api/waitlist")
 def waitlist(req: WaitlistRequest, request: Request) -> dict[str, bool]:
-    """Add an email to the Pro early-access waitlist (stored in waitlist.json).
+    """Add an email to the Pro early-access waitlist.
 
     Validates format, rejects duplicates, and rate-limits to 3/hour per IP.
-    stdlib only — no database. Each signup is appended with a UTC timestamp.
+    Each signup is appended with a UTC timestamp to a Google Sheet, falling back
+    to waitlist.json if Sheets is unconfigured or unreachable.
     """
     email = req.email.strip().lower()
     if not email or len(email) > 254 or not EMAIL_RE.match(email):
@@ -206,26 +295,15 @@ def waitlist(req: WaitlistRequest, request: Request) -> dict[str, bool]:
             detail="Too many signups from this network. Please try again later.",
         )
 
-    # Load the existing list (tolerate a missing or corrupt file by starting fresh).
-    entries: list[dict] = []
-    if WAITLIST_PATH.exists():
-        try:
-            loaded = json.loads(WAITLIST_PATH.read_text(encoding="utf-8"))
-            if isinstance(loaded, list):
-                entries = loaded
-        except (json.JSONDecodeError, OSError):
-            entries = []
-
-    if any(isinstance(e, dict) and e.get("email") == email for e in entries):
+    timestamp = datetime.now(timezone.utc).isoformat()
+    try:
+        backend = _store_signup(email, timestamp)
+    except _DuplicateEmail:
         raise HTTPException(status_code=409, detail="You're already on the list.")
-
-    entry = {"email": email, "timestamp": datetime.now(timezone.utc).isoformat()}
-    entries.append(entry)
-    WAITLIST_PATH.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     hits.append(now)
     _WAITLIST_HITS[ip] = hits
-    print(f"[waitlist] {entry['timestamp']}  {email}  (total: {len(entries)})")
+    print(f"[waitlist] {timestamp}  {email}  (via {backend})")
     return {"success": True}
 
 

@@ -27,8 +27,11 @@ grid** so it lands in real-world metres.
   produces, explains Free vs Pro, and captures Pro waitlist signups.
 - **`/app`** — the tool itself (map, generate, analysis, downloads, design brief).
 - **`/api/waitlist`** — `POST {"email": "..."}`. Validates, de-dupes, rate-limits to
-  3/hour per IP, and appends `{email, timestamp}` to **`waitlist.json`** (project root,
-  **gitignored** — signup emails are never committed).
+  3/hour per IP, and appends `[email, timestamp]` as a new row to a **Google Sheet**
+  (set `GOOGLE_SHEETS_CREDENTIALS` to the service-account JSON string and
+  `GOOGLE_SHEET_ID` to the target sheet's id; share the sheet with the service-account
+  email). If Sheets is unconfigured or unreachable, it falls back to **`waitlist.json`**
+  (project root, **gitignored** — signup emails are never committed) so no signup is lost.
 
 > **Hero image — replace before going live.** The landing page shows
 > `static/hero-model.png`, which currently ships as a **dark placeholder**. Replace it
