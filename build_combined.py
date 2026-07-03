@@ -37,9 +37,49 @@ import rhino3dm
 import build_dxf as dxf
 import build_rhino as rh
 from build_terrain import add_terrain
+from errors import AreaTooLargeError, MemoryLimitError
 from fetch_core import fetch_overpass, get_transformer, resolve_area
 from fetch_elevation import ElevationGrid, fetch_elevation_grid
 from fetch_lidar import LidarHeights, fetch_lidar_heights
+
+# --- Resident-memory instrumentation (the 512 MB free tier is the binding
+# constraint). psutil gives the true current RSS; if it's ever unavailable the
+# governor degrades to a no-op (checks return None and are skipped) rather than
+# crashing the build. ----------------------------------------------------------
+try:
+    import psutil
+
+    _PROC = psutil.Process()
+except Exception:  # noqa: BLE001 - psutil missing/unusable -> governor is a no-op
+    _PROC = None
+
+
+def current_rss_mb() -> float | None:
+    """Current resident set size in MB, or None if psutil is unavailable."""
+    if _PROC is None:
+        return None
+    try:
+        return _PROC.memory_info().rss / 1048576
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# OOM governor thresholds (MB of RSS). The LiDAR/solid budgets are UPFRONT
+# estimates; these are the LIVE backstops during the heavy building loop, so a
+# denser-than-modelled site is caught before Render's OOM killer fires:
+#   - at SOFT we stop minting new house solids (the heaviest per-house cost) and
+#     fall back to lighter meshes, slowing memory growth;
+#   - at HARD we abort with a clean MemoryLimitError (a JSON 507) rather than
+#     marching into a silent OOM kill.
+MEMORY_SOFT_MB = 455.0
+MEMORY_HARD_MB = 495.0
+MEMORY_CHECK_EVERY = 400          # buildings between live RSS checks
+
+# Upfront request-size reject. Shoreditch (~13k buildings) is the largest site
+# proven to deploy on the 512 MB tier; well beyond that an urban box is a certain
+# OOM, so we reject it before building any geometry with a clear 413 rather than
+# attempting it and getting killed mid-process.
+MAX_BUILDINGS = 24000
 
 # RGB palette for the Linework groups, keyed by the top-level DXF category.
 # (build_dxf uses AutoCAD Color Index integers; Rhino needs RGB, so we map the
@@ -304,6 +344,9 @@ def _build_3d_group(
         1 for el in data.get("elements", [])
         if el.get("type") == "way" and "building" in el.get("tags", {})))
     base_z_samples: list[float] = []  # first few building bases, for verification
+    bldg_seen = 0                     # buildings entered, for periodic RSS checks
+    force_mesh = False                # set once the soft memory limit is crossed
+    mem_soft_at: int | None = None    # building count at which the soft limit hit
     # Drain the element list as we go so each parsed feature's raw geometry is
     # released immediately, rather than holding the whole dataset until return.
     elements = data.get("elements", [])
@@ -318,6 +361,26 @@ def _build_3d_group(
         pts = [transformer.transform(p["lon"], p["lat"]) for p in geom]
 
         if "building" in tags:
+            # Live OOM backstop: the solid/LiDAR budgets are upfront estimates,
+            # so we also watch actual RSS during the heavy building loop. At the
+            # soft limit we stop minting solids; at the hard limit we abort
+            # cleanly instead of being OOM-killed by Render.
+            bldg_seen += 1
+            if bldg_seen % MEMORY_CHECK_EVERY == 0:
+                rss = current_rss_mb()
+                if rss is not None:
+                    if rss >= MEMORY_HARD_MB:
+                        raise MemoryLimitError(
+                            f"Memory ceiling reached mid-build ({rss:.0f} MB, "
+                            f"limit {MEMORY_HARD_MB:.0f} MB) after {bldg_seen} "
+                            f"of ~{buildings + 1}+ buildings."
+                        )
+                    if rss >= MEMORY_SOFT_MB and not force_mesh:
+                        force_mesh = True
+                        mem_soft_at = bldg_seen
+                        print(f"[generate] stage=build soft memory limit "
+                              f"{rss:.0f} MB at {bldg_seen} buildings — meshes "
+                              f"only from here to slow growth.")
             base = (
                 min(grid.sample(p["lon"], p["lat"]) for p in geom)
                 if grid is not None
@@ -338,7 +401,7 @@ def _build_3d_group(
             blocks_layer = "BUILDINGS_blocks_real" if real else "BUILDINGS_blocks_estimated"
             if rh.is_house(tags, rh._footprint_area_m2(pts)):
                 added = False
-                if house_solids < solid_budget:
+                if house_solids < solid_budget and not force_mesh:
                     solid = rh.house_solid(pts, base, height, solid_failures)
                 else:
                     solid = None
@@ -423,6 +486,7 @@ def _build_3d_group(
         "prov_lidar": prov_counts[rh.PROV_LIDAR],
         "prov_estimated": prov_counts[rh.PROV_ESTIMATED],
         "lidar_covered": lidar_covered,
+        "mem_soft_at": mem_soft_at,
     }
 
 
@@ -580,6 +644,20 @@ def build_combined(
     n_buildings = sum(
         1 for el in lean.get("elements", [])
         if el.get("type") == "way" and "building" in el.get("tags", {}))
+
+    # Upfront OOM guard: reject a site whose building count is beyond what the
+    # 512 MB tier can build, with a clear error, BEFORE spending memory on
+    # geometry and the (much larger) detailed fetch. Getting killed mid-process
+    # is the failure mode we're eliminating here.
+    if n_buildings > MAX_BUILDINGS:
+        print(f"[generate] stage=validate reject: {n_buildings} buildings "
+              f"exceeds the {MAX_BUILDINGS} limit for this server tier.")
+        raise AreaTooLargeError(
+            f"This area has {n_buildings:,} buildings — beyond the "
+            f"{MAX_BUILDINGS:,} the free server tier can build. Try a smaller "
+            f"box, or disable terrain."
+        )
+
     budget_px = lidar_budget_px(n_buildings)
     if budget_px <= 0:
         lidar, lidar_info = None, {
@@ -608,18 +686,37 @@ def build_combined(
 
     model.Write(out_path, 0)
 
-    # Read back and confirm the structural invariants.
-    check = rhino3dm.File3dm.Read(out_path)
-    obj_count = len(check.Objects)
-    layer_count = len(check.Layers)
-    groups = {lay.Name for lay in check.Layers}
-    has_3d = "3D" in groups
-    has_linework = "Linework" in groups
-    has_terrain = "TERRAIN" in groups
+    # Read back and confirm the structural invariants — but only with headroom.
+    # The read-back loads a SECOND full copy of the model alongside the live one,
+    # which on a large dense site is exactly the spike that trips Render's OOM
+    # killer. If RSS is already near the ceiling we skip the self-check (the file
+    # is written and served either way) rather than risk being killed AFTER the
+    # work is done.
+    rss = current_rss_mb()
+    if rss is not None and rss >= MEMORY_SOFT_MB:
+        print(f"[generate] stage=write skipping read-back verification at "
+              f"{rss:.0f} MB RSS to avoid an OOM spike.")
+        del model
+        gc.collect()
+        # -1 = "not verified" (not counted); the groups we know we built.
+        obj_count = layer_count = -1
+        has_3d = has_linework = True
+        has_terrain = terrain
+        readback_skipped = True
+    else:
+        check = rhino3dm.File3dm.Read(out_path)
+        obj_count = len(check.Objects)
+        layer_count = len(check.Layers)
+        groups = {lay.Name for lay in check.Layers}
+        has_3d = "3D" in groups
+        has_linework = "Linework" in groups
+        has_terrain = "TERRAIN" in groups
+        readback_skipped = False
 
     return {
         "display_name": display_name,
         "epsg": epsg,
+        "readback_skipped": readback_skipped,
         "objects": obj_count,
         "layers": layer_count,
         "objects_3d": g3d["objects"],

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -28,6 +28,7 @@ from starlette.background import BackgroundTask
 from build_combined import build_combined
 from build_dxf import build_dxf
 from build_rhino import build_rhino
+from errors import PipelineError
 
 app = FastAPI(title="SiteGrab", description="OSM site data to Rhino / AutoCAD")
 
@@ -129,6 +130,22 @@ def _cleanup(tmpdir: str) -> None:
         os.rmdir(tmpdir)
     except OSError:
         pass
+
+
+def _error_response(
+    status: int, error: str, message: str, stage: str
+) -> JSONResponse:
+    """A consistent JSON error body for the frontend.
+
+    Carries a machine-readable ``error`` code, a human ``message`` and the
+    ``stage`` that failed. ``detail`` mirrors ``message`` so any client reading
+    the FastAPI-standard ``detail`` field still works.
+    """
+    return JSONResponse(
+        status_code=status,
+        content={"error": error, "message": message, "stage": stage,
+                 "detail": message},
+    )
 
 
 def _provenance_headers(stats: dict | None) -> dict[str, str]:
@@ -349,18 +366,32 @@ def generate(req: GenerateRequest):
             path = os.path.join(tmpdir, f"{slug}.dxf")
             build_dxf(req.area, path, bbox)
             produced.append((path, f"{slug}.dxf"))
+    except PipelineError as ex:
+        # A stage failed fast with a machine code (overpass/terrain/memory/...):
+        # log which stage, return a clean JSON error rather than hanging or 500.
+        _cleanup(tmpdir)
+        print(f"[generate] stage={ex.stage} error={ex.error_code}: {ex.message}")
+        return _error_response(ex.http_status, ex.error_code, ex.message, ex.stage)
     except ValueError as ex:
         # Name path: geocoding failure -> 404. Bbox path: an invalid or
         # oversized drawn box is a bad request -> 422.
         _cleanup(tmpdir)
-        raise HTTPException(status_code=422 if bbox else 404, detail=str(ex))
+        status = 422 if bbox else 404
+        code = "invalid_area" if bbox else "area_not_found"
+        print(f"[generate] stage=validate error={code}: {ex}")
+        return _error_response(status, code, str(ex), "validate")
     except RuntimeError as ex:
-        # Overpass or the elevation tile service unavailable after retries.
+        # Any other service unavailability after retries (non-typed).
         _cleanup(tmpdir)
-        raise HTTPException(status_code=503, detail=str(ex))
+        print(f"[generate] stage=fetch error=service_unavailable: {ex}")
+        return _error_response(503, "service_unavailable", str(ex), "fetch")
     except Exception as ex:  # noqa: BLE001
+        # Unhandled failure during the Rhino/DXF write (or anywhere else): still
+        # a clean JSON error, never a dropped connection or raw 500 page.
         _cleanup(tmpdir)
-        raise HTTPException(status_code=500, detail=f"Generation failed: {ex}")
+        print(f"[generate] stage=write error=generation_failed: {ex!r}")
+        return _error_response(500, "generation_failed",
+                               f"Generation failed: {ex}", "write")
 
     # Height-provenance note for the combined file (Option C): surfaced to the
     # browser via a header so the UI can show which heights are surveyed.

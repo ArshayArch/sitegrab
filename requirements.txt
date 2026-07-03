@@ -9,3 +9,4 @@ pillow==12.2.0
 astral==3.2
 gspread==6.2.1
 google-auth==2.55.0
+psutil==7.1.3

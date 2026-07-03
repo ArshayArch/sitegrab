@@ -18,6 +18,8 @@ from typing import Any
 
 from pyproj import Transformer
 
+from errors import OverpassTimeoutError
+
 UA: dict[str, str] = {
     "User-Agent": "sitegrab/1.0 (architectural site modelling; contact: kathpaliaarshay@gmail.com)"
 }
@@ -49,6 +51,15 @@ OVERPASS: list[str] = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
+
+# Fail-fast budget. The old code allowed 6 attempts x 180s + growing backoff
+# (>1000s worst case), so a stuck Overpass hung the whole request indefinitely.
+# We now cap the TOTAL wall-clock time across all mirrors, retries and backoff:
+# if the data isn't in hand within OVERPASS_TOTAL_TIMEOUT seconds we raise
+# OverpassTimeoutError and return a clean error instead of hanging. Each attempt
+# is also capped so a single slow mirror can't eat the whole budget.
+OVERPASS_TOTAL_TIMEOUT: float = 30.0
+OVERPASS_PER_ATTEMPT_TIMEOUT: float = 12.0
 
 
 def geocode(name: str) -> tuple[float, float, float, float, str]:
@@ -114,27 +125,50 @@ def utm_epsg(lon: float, lat: float) -> int:
     return (32600 if lat >= 0 else 32700) + zone  # e.g. 32640 Dubai, 32630 most of UK
 
 
-def fetch_overpass(query: str) -> dict[str, Any]:
+def fetch_overpass(
+    query: str, total_timeout: float = OVERPASS_TOTAL_TIMEOUT
+) -> dict[str, Any]:
     """POST to Overpass with mirror failover + exponential backoff.
 
-    Overpass frequently returns a non-JSON 'server busy' HTML page; treat that
-    as retryable rather than a hard failure.
+    Bounded by a HARD total-time ceiling (``total_timeout`` seconds across all
+    mirrors, retries and backoff) so a stuck or busy Overpass fails fast instead
+    of hanging the request. Raises :class:`OverpassTimeoutError` when the budget
+    is exhausted. Overpass frequently returns a non-JSON 'server busy' HTML page;
+    that is treated as retryable rather than a hard failure.
     """
+    start = time.monotonic()
     last: str | None = None
-    for attempt in range(6):
+    attempt = 0
+    while True:
+        remaining = total_timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise OverpassTimeoutError(
+                f"Overpass did not respond within {total_timeout:.0f}s "
+                f"(last: {last or 'no response'})."
+            )
         endpoint = OVERPASS[attempt % len(OVERPASS)]
         try:
             body = urllib.parse.urlencode({"data": query}).encode()
             req = urllib.request.Request(endpoint, data=body, headers=UA)
-            with urllib.request.urlopen(req, timeout=180) as r:
+            # Never let one attempt exceed the remaining budget.
+            attempt_timeout = min(OVERPASS_PER_ATTEMPT_TIMEOUT, remaining)
+            with urllib.request.urlopen(req, timeout=attempt_timeout) as r:
                 txt = r.read().decode()
             if txt.strip().startswith("{"):
                 return json.loads(txt)
             last = "server busy"
         except Exception as ex:  # noqa: BLE001 - any network error is retryable
             last = str(ex)
-        time.sleep(2 ** attempt)
-    raise RuntimeError(f"Overpass unavailable after retries: {last}")
+            print(f"[overpass] attempt {attempt + 1} on {endpoint} failed: {ex}")
+        attempt += 1
+        # Backoff, but never sleep past the remaining budget.
+        remaining = total_timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise OverpassTimeoutError(
+                f"Overpass did not respond within {total_timeout:.0f}s "
+                f"(last: {last or 'no response'})."
+            )
+        time.sleep(min(2 ** attempt, remaining))
 
 
 def get_transformer(

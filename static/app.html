@@ -768,6 +768,37 @@
   function clearStatus() { stopLoading(); }
   function showError(msg) { stopLoading(); statusEl.className = "status show error"; statusEl.textContent = "⚠  " + msg; }
 
+  // Error in the status line WITH a "Try again" action that re-runs the same
+  // request (same source + formats), so a timeout/failure never leaves the user
+  // stuck redrawing their box.
+  function showRetryError(msg, source, formats) {
+    stopLoading();
+    statusEl.className = "status show error";
+    statusEl.innerHTML = "";
+    const span = document.createElement("span");
+    span.textContent = "⚠  " + msg;
+    const btn = document.createElement("button");
+    btn.className = "linkbtn"; btn.textContent = "Try again";
+    btn.style.marginLeft = "10px";
+    btn.addEventListener("click", () => { clearStatus(); generate(source, formats); });
+    statusEl.append(span, btn);
+  }
+
+  // Hard client-side ceiling: if the server hasn't responded within this window
+  // (cold start, Overpass/terrain hang, or an OOM kill that drops the socket),
+  // abort the fetch so the UI resolves to a visible error instead of spinning.
+  // Sits above the backend's own 30s Overpass / 25s terrain ceilings.
+  const GENERATE_TIMEOUT_MS = 75000;
+  async function fetchWithTimeout(url, opts, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, Object.assign({ signal: ctrl.signal }, opts));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // ---- filename from Content-Disposition ----
   function filenameFrom(resp, fallback) {
     const cd = resp.headers.get("Content-Disposition") || "";
@@ -858,6 +889,7 @@
 
     const newUrls = [];
     let okCount = 0;
+    let timedOut = false;   // did any request abort on the client timeout?
 
     // Payload shared by every format request: a drawn bbox skips geocoding.
     // The terrain flag only affects the combined build; harmless elsewhere.
@@ -866,17 +898,21 @@
       : { area: source.area, terrain: terrainChk.checked };
     const fallbackBase = source.kind === "bbox" ? "site" : source.area;
 
-    // Run sequentially to stay polite to the public OSM servers.
+    // Run sequentially to stay polite to the public OSM servers. Every request
+    // resolves to success OR a visible failure — the spinner is never left to
+    // spin forever (the timeout below guarantees the fetch settles).
     for (const fmt of formats) {
       try {
-        const resp = await fetch("/generate", {
+        const resp = await fetchWithTimeout("/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign({ formats: [fmt] }, payloadBase)),
-        });
+        }, GENERATE_TIMEOUT_MS);
         if (!resp.ok) {
+          // Prefer the backend's human message (new JSON error body), then its
+          // FastAPI-standard detail, then a bare status line.
           let msg = "HTTP " + resp.status;
-          try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
+          try { const e = await resp.json(); if (e && (e.message || e.detail)) msg = e.message || e.detail; } catch (_) {}
           failCard(cards[fmt], msg);
           continue;
         }
@@ -888,7 +924,12 @@
         fillCard(cards[fmt], fmt, filenameFrom(resp, fallbackBase + "." + FORMAT_META[fmt].ext.toLowerCase()), url, blob.size);
         okCount++;
       } catch (e) {
-        failCard(cards[fmt], "Network error");
+        if (e && e.name === "AbortError") {
+          timedOut = true;
+          failCard(cards[fmt], "Timed out — no response in time.");
+        } else {
+          failCard(cards[fmt], "Network error — could not reach the server.");
+        }
       }
     }
 
@@ -904,7 +945,14 @@
     stopLoading();
     busy = false; genBtn.disabled = false;
 
-    if (okCount === 0) { showError("Could not generate any files. See the cards above."); return false; }
+    if (okCount === 0) {
+      const msg = timedOut
+        ? "Generation timed out — this can happen on large or dense areas, or if " +
+          "the server was asleep. Try again, or draw a smaller box."
+        : "Could not generate any files. See the cards above for what went wrong.";
+      showRetryError(msg, source, formats);
+      return false;
+    }
 
     // Resolve a display label + brief subject. For the box path, reverse-geocode
     // the centroid so the iteration bar and design brief still name a real place.

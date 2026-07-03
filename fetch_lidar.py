@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import gc
 import io
+import time
 import urllib.parse
 import urllib.request
 
@@ -68,6 +69,14 @@ _NODATA_BELOW = -1.0e30
 
 _RETRIES = 4
 
+# Fail-fast budget for a single WCS coverage fetch. LiDAR is OPTIONAL: on
+# timeout the caller (fetch_lidar_heights) degrades gracefully to type-estimated
+# heights and SAYS SO in the provenance note — deliberately NOT a hard request
+# error, since a slow LiDAR service should never fail a build that succeeds fine
+# with estimates. This ceiling just stops a stuck WCS from stalling the request.
+_COVERAGE_TIMEOUT: float = 15.0
+_PER_ATTEMPT_TIMEOUT: float = 12.0
+
 
 def _to_bng() -> Transformer:
     return Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True)
@@ -93,10 +102,16 @@ def _get_coverage(wcs: str, cid: str, bng_bbox: tuple[float, float, float, float
         query += f"&scalefactor={scalefactor:.4f}"
     url = f"{wcs}?{query}"
     last: Exception | None = None
+    deadline = time.monotonic() + _COVERAGE_TIMEOUT
     for attempt in range(_RETRIES):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(
+                req, timeout=min(_PER_ATTEMPT_TIMEOUT, remaining)
+            ) as r:
                 raw = r.read()
             im = Image.open(io.BytesIO(raw))
             arr = np.asarray(im, dtype=np.float32)

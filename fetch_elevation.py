@@ -25,10 +25,18 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+from errors import TerrainTimeoutError
 from fetch_core import UA
 
 ELEVATION_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 TILE_SIZE = 256
+
+# Fail-fast budget for the whole grid fetch (all covering tiles share one
+# deadline). Without this, up to MAX_TILES tiles x 4 retries x 30s + backoff
+# could hang a request for minutes; instead we raise TerrainTimeoutError and the
+# endpoint returns a clean error (the user can retry or disable terrain).
+TERRAIN_TOTAL_TIMEOUT: float = 25.0
+TERRAIN_PER_ATTEMPT_TIMEOUT: float = 10.0
 
 # Zoom search bounds. z15 is the highest level published; below z6 a 15km box
 # is a handful of pixels and useless.
@@ -85,24 +93,43 @@ def _pick_zoom(s: float, w: float, n: float, e: float) -> int:
     return MIN_ZOOM
 
 
-def _fetch_tile(z: int, x: int, y: int) -> np.ndarray:
-    """Fetch + decode one terrarium tile to a (256, 256) float32 metres array."""
+def _fetch_tile(z: int, x: int, y: int, deadline: float) -> np.ndarray:
+    """Fetch + decode one terrarium tile to a (256, 256) float32 metres array.
+
+    Bounded by a shared ``deadline`` (monotonic clock) so the whole grid fetch
+    fails fast; raises :class:`TerrainTimeoutError` if the tile isn't retrieved
+    in time.
+    """
     url = ELEVATION_URL.format(z=z, x=x, y=y)
     last: str | None = None
-    for attempt in range(4):
+    attempt = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TerrainTimeoutError(
+                f"Elevation tiles did not respond in time (AWS Terrain Tiles, "
+                f"tile {z}/{x}/{y}; last: {last or 'no response'})."
+            )
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(
+                req, timeout=min(TERRAIN_PER_ATTEMPT_TIMEOUT, remaining)
+            ) as r:
                 raw = r.read()
             img = Image.open(io.BytesIO(raw)).convert("RGB")
             rgb = np.asarray(img, dtype=np.float32)
             return rgb[:, :, 0] * 256.0 + rgb[:, :, 1] + rgb[:, :, 2] / 256.0 - 32768.0
         except Exception as ex:  # noqa: BLE001 - any network/decode error is retryable
             last = str(ex)
-        time.sleep(2**attempt)
-    raise RuntimeError(
-        f"Elevation data unavailable (AWS Terrain Tiles, tile {z}/{x}/{y}): {last}"
-    )
+            print(f"[terrain] tile {z}/{x}/{y} attempt {attempt + 1} failed: {ex}")
+        attempt += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TerrainTimeoutError(
+                f"Elevation tiles did not respond in time (AWS Terrain Tiles, "
+                f"tile {z}/{x}/{y}; last: {last or 'no response'})."
+            )
+        time.sleep(min(2**attempt, remaining))
 
 
 @dataclass
@@ -160,13 +187,17 @@ def fetch_elevation_grid(s: float, w: float, n: float, e: float) -> ElevationGri
     tx0, tx1 = px0 // TILE_SIZE, (px1 - 1) // TILE_SIZE
     ty0, ty1 = py0 // TILE_SIZE, (py1 - 1) // TILE_SIZE
 
+    # One shared deadline for every covering tile, so the whole mosaic fetch is
+    # bounded regardless of how many tiles it takes.
+    deadline = time.monotonic() + TERRAIN_TOTAL_TIMEOUT
+
     # Mosaic the covering tiles, then crop to the bbox pixel window.
     mosaic = np.empty(
         ((ty1 - ty0 + 1) * TILE_SIZE, (tx1 - tx0 + 1) * TILE_SIZE), dtype=np.float32
     )
     for ty in range(ty0, ty1 + 1):
         for tx in range(tx0, tx1 + 1):
-            tile = _fetch_tile(z, tx, ty)
+            tile = _fetch_tile(z, tx, ty, deadline)
             r0, c0 = (ty - ty0) * TILE_SIZE, (tx - tx0) * TILE_SIZE
             mosaic[r0 : r0 + TILE_SIZE, c0 : c0 + TILE_SIZE] = tile
 

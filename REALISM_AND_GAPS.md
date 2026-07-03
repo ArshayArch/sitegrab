@@ -862,3 +862,112 @@ The trap is treating a free, no-card email as proof of willingness to pay. It is
 of *curiosity*. Only C3 converts curiosity into a commitment we can bank — and it should
 be run as a measured A/B, after C1/C2, so we learn whether the constraint was ever money
 in the first place.
+
+## v10.1 — The hang: fail fast, never spin forever (standing method: conjecture & refutation)
+
+### 1. Problem — the promise the backend didn't keep
+
+v10's §5 named it precisely: the landing page promises "ready in two minutes," but the
+`/app` reality could deliver *no answer at all*. When generation failed or stalled
+server-side — Overpass mirror timeout, Render cold start, or the process being OOM-killed
+before the 440 MB solid governor's check ever fired — the frontend spun on "Aligning and
+writing Rhino file…" **forever**: no error, no recovery, the box the user drew lost. The
+worst failure a tool can have is not an error; it is *silence*. Three specific holes:
+
+- **No total-time ceiling anywhere.** `fetch_overpass` allowed 6 attempts × 180 s +
+  growing backoff — over 1000 s worst case. Terrain (`_fetch_tile`) and LiDAR
+  (`_get_coverage`) had the same unbounded shape. A single stuck mirror hung the whole
+  request past any human's patience, with the socket still nominally "open."
+- **The client had no timeout at all.** `fetch("/generate")` with no `AbortController`:
+  if the connection hung or was dropped mid-write by an OOM kill, the promise never
+  settled, so the spinner never stopped.
+- **The memory governor was a single upfront estimate.** The solid budget and the LiDAR
+  `budget_px` were both computed *once* from the building count. A denser-than-modelled
+  box (the classic 1.5 × 1.0 km urban tile) could sail past the upfront estimate and get
+  OOM-killed by Render *between* the two checks — the fallback logic never ran.
+
+### 2. Conjectured solutions
+
+- **T1 — Client `AbortController`, 75 s ceiling.** Any request that doesn't settle in
+  time aborts to a visible error + a "Try again" that replays the same params.
+- **T2 — Hard total-time budgets on every fetch stage.** Overpass 30 s, terrain 25 s,
+  LiDAR 15 s/coverage — measured against a monotonic deadline across *all* retries and
+  backoff, not per-attempt. Each raises a typed error (`OverpassTimeoutError`, …).
+- **T3 — Typed staged errors → uniform JSON body.** Every distinct failure converts to
+  `{"error": <code>, "message": <human>, "stage": <overpass|terrain|lidar|validate|
+  build|write>}`, logged by stage, never a raw 500 or a dropped connection.
+- **T4 — Live memory governor in the building loop.** Check real RSS (psutil) every 400
+  buildings: at a soft limit stop minting solids (fall to meshes), at a hard limit abort
+  with a clean 507 *before* the OOM killer fires. Plus an upfront building-count reject
+  (413) for sites beyond what the 512 MB tier can build.
+
+### 3. Criticism — attack each
+
+- **T1** cannot distinguish "server is slow but working" from "server is dead" — a 75 s
+  abort will occasionally kill a request that would have succeeded at 80 s on a cold
+  start. Accepted trade: a false-timeout the user can *retry* in one click beats an
+  infinite spin they cannot escape. The ceiling sits deliberately *above* the backend's
+  own 30/25 s budgets, so in practice the server returns its own typed error first and
+  the client abort is the backstop, not the primary path.
+- **T2** is falsifiable and was tested: with every mirror forced to error, `fetch_overpass`
+  raises `OverpassTimeoutError` in 3.0 s against a 3 s budget (not 1000 s), and terrain
+  the same. **Falsifier that passed:** a small live Clifton box still recovered from a
+  *real* Overpass 504 on the first mirror by retrying the second within budget — the
+  ceiling bounds failure without breaking transient-failure recovery.
+- **T3**'s risk is leaking internal detail into user-facing messages. Mitigated: typed
+  errors carry curated human copy; only the catch-all `write` path interpolates the raw
+  exception, and that path is genuinely unexpected. `detail` mirrors `message` so the
+  existing client field keeps working.
+- **T4** is the subtle one. **LiDAR was deliberately *not* made a hard error** — it
+  already degrades to type-estimated heights and *says so* in the provenance note, which
+  is the honest v9 design; failing a whole build because an *optional* height source was
+  slow would be a regression, so LiDAR timeout stays a graceful fallback, only *bounded*
+  in time. The read-back verification (`File3dm.Read` loads a *second* full copy of the
+  model) is itself an OOM spike on a large site, so it is now skipped when RSS is already
+  near the ceiling — the file is written and served either way; only the self-check is
+  sacrificed. **Falsifier that passed:** a live build stayed well under the soft limit,
+  `readback_skipped=False`, real LiDAR present — the guards are dormant on normal sites
+  and only bite the pathological ones.
+
+### 4. Replacement — what shipped
+
+All four, because they are one mechanism — *bound every wait, and make the boundary
+visible* — not four features:
+
+1. **Backend budgets + typed errors (T2/T3).** `errors.py` holds the staged exception
+   hierarchy; `fetch_core`/`fetch_elevation`/`fetch_lidar` enforce monotonic deadlines;
+   `/generate` maps them to JSON with a machine code, a human message and the failing
+   stage, logged as `[generate] stage=… error=…` for blind Render-log triage.
+2. **Live memory governor + upfront reject (T4).** `build_combined` watches RSS in the
+   building loop (soft → meshes, hard → 507) and rejects > 24 000 buildings upfront (413,
+   above Shoreditch's proven-deployable ~13 k). The read-back is guarded.
+3. **Client ceiling + one-click retry (T1).** `fetchWithTimeout` aborts at 75 s; every
+   failure path resolves to a visible status-line error, and total failure offers "Try
+   again" with the same source + formats so the drawn box is never lost.
+
+### 5. New problem — a bounded failure is still a failure
+
+**Fail-fast converts silence into an honest error, but it does not make the area
+generate.** A user who draws a dense 3 km box and gets "Area too large or dense — try a
+smaller box" now *understands* what happened, which is strictly better than a spinner —
+but they still didn't get their model, and the message is an admission that the free tier
+can't serve the site their brief actually needs. Every ceiling here (30 s Overpass, 24 000
+buildings, 512 MB) is a line drawn by the *server tier*, not the *use case*, so each
+honest error is also an advertisement for the constraint Pro removes. That is the correct
+next wedge — the 2 GB tier that lifts the building cap and runs full-resolution LiDAR on
+megasites is now a *felt* need with a name attached to the error, not a hypothetical. The
+risk to watch: if the *common* case (a normal neighbourhood box on a warm server) ever
+trips these guards, they have become false positives that punish the very users the
+landing page courted — so the thresholds are set above every measured-good site, and the
+soft/hard split degrades gracefully before it ever refuses. The honest failure is the
+floor; the job from here is to raise the ceiling, not lower the floor to meet it.
+
+### Monetisation note — the error message is the upsell
+
+Unlike geometry, an *honest constraint* is something people pay to remove. The "too large
+for the free tier" 413 and the LiDAR-governed provenance note both name a limit and
+implicitly price its removal. This is the cleanest monetisation signal the tool has
+produced: not "pay for a nicer model," but "pay to model the site you actually have." The
+counter to wire next is *how often real traffic hits each ceiling* — a guard tripped by
+1 % of sessions is a fair Pro gate; one tripped by 30 % is a broken free tier masquerading
+as a paywall, and the analytics must tell those apart before any billing line is drawn.
