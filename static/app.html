@@ -766,6 +766,13 @@
   }
   function stopLoading() { if (loadTimer) { clearInterval(loadTimer); loadTimer = null; } statusEl.className = "status"; statusEl.innerHTML = ""; }
   function clearStatus() { stopLoading(); }
+  // Cold-start message: pauses the rotating progress copy and states plainly that
+  // the sleepy free-tier server is waking. Not an error — the request is retrying.
+  function showWaking() {
+    if (loadTimer) { clearInterval(loadTimer); loadTimer = null; }
+    statusEl.className = "status show";
+    statusEl.innerHTML = '<span class="spinner"></span><span>' + COLD_START_MSG + "</span>";
+  }
   function showError(msg) { stopLoading(); statusEl.className = "status show error"; statusEl.textContent = "⚠  " + msg; }
 
   // Error in the status line WITH a "Try again" action that re-runs the same
@@ -797,6 +804,59 @@
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // ---- cold-start resilience (Render free-tier wakes lazily) ------------------
+  // The free instance sleeps after ~15 min idle; the first request then pays a
+  // 30-50s wake-up before our app even runs, which blows past the normal timeout
+  // and looks like a failure. We detect that specific shape and retry ONCE with a
+  // long timeout, telling the user honestly that the server is waking — instead of
+  // surfacing an error that "works on retry" anyway.
+  //
+  // What is NOT a cold start: any real answer from our app. Every app error
+  // (invalid area/bbox 422, not-found 404, service_unavailable 503,
+  // generation_failed 500, and /brief's upstream 502/504/429) comes back as an
+  // HTTP response carrying a JSON body — those are surfaced immediately, no retry.
+  // A cold start instead looks like: the request never gets a real answer (client
+  // timeout / dropped connection) or a gateway 5xx whose body is the platform's
+  // own HTML/empty page rather than our JSON.
+  const COLD_START_MSG =
+    "Waking up the server — this can take up to a minute on the first request…";
+  const COLD_RETRY_TIMEOUT_MS = 120000;  // generous: wake + real work on the retry
+  // First-attempt ceilings, sized to each endpoint's normal work so a cold start
+  // (which overruns them) trips the retry, without false-firing on healthy calls.
+  const BRIEF_TIMEOUT_MS = 45000;        // LLM brief: seconds normally
+  const ANALYSIS_TIMEOUT_MS = 75000;     // heavy, like /generate
+  const ANALYSES_LIST_TIMEOUT_MS = 15000; // tiny GET; a stall here is a cold start
+
+  async function looksLikeColdResponse(resp) {
+    // Only gateway/unavailable codes can be a sleeping-proxy artifact. If we can
+    // read one of our own JSON fields out of the body, the app is awake and this
+    // is a genuine error — not a cold start.
+    if (resp.status !== 502 && resp.status !== 503 && resp.status !== 504) return false;
+    try {
+      const data = await resp.clone().json();
+      if (data && (data.detail || data.message || data.error)) return false;
+    } catch (_) { /* non-JSON (proxy HTML / empty) -> smells like a sleeping proxy */ }
+    return true;
+  }
+
+  // Fetch with a first-attempt timeout; on a cold-start-shaped failure, fire
+  // `onWake` (to show the honest "waking up" message) and retry once with a long
+  // timeout. The returned/thrown result of the retry flows straight to the caller,
+  // so a second failure surfaces the real error exactly as a single attempt would.
+  async function fetchResilient(url, opts, firstTimeoutMs, onWake) {
+    try {
+      const resp = await fetchWithTimeout(url, opts, firstTimeoutMs);
+      if (!(await looksLikeColdResponse(resp))) return resp;   // real answer -> caller handles
+    } catch (e) {
+      // fetch only rejects with AbortError (our timeout) or a network TypeError
+      // (dropped connection) — both mean the app never answered, i.e. a cold
+      // start. Anything else is unexpected; let it propagate untouched.
+      if (!(e && (e.name === "AbortError" || e instanceof TypeError))) throw e;
+    }
+    if (onWake) onWake();
+    return await fetchWithTimeout(url, opts, COLD_RETRY_TIMEOUT_MS);
   }
 
   // ---- filename from Content-Disposition ----
@@ -903,11 +963,14 @@
     // spin forever (the timeout below guarantees the fetch settles).
     for (const fmt of formats) {
       try {
-        const resp = await fetchWithTimeout("/generate", {
+        let woke = false;
+        const resp = await fetchResilient("/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(Object.assign({ formats: [fmt] }, payloadBase)),
-        }, GENERATE_TIMEOUT_MS);
+        }, GENERATE_TIMEOUT_MS, () => { woke = true; showWaking(); });
+        // Server is awake now — resume the rotating progress copy for the real work.
+        if (woke) startLoading();
         if (!resp.ok) {
           // Prefer the backend's human message (new JSON error body), then its
           // FastAPI-standard detail, then a bare status line.
@@ -1034,10 +1097,13 @@
     briefBody.innerHTML = '<span style="color:var(--muted);font-family:var(--mono);font-size:.85rem">Composing a site analysis<span class="inline-spin"><span class="spinner"></span></span></span>';
     briefActions.innerHTML = "";
     try {
-      const resp = await fetch("/brief", {
+      const resp = await fetchResilient("/brief", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ area: currentBriefArea, display_name: currentBriefArea, mode }),
+      }, BRIEF_TIMEOUT_MS, () => {
+        briefBody.innerHTML = '<span style="color:var(--muted);font-family:var(--mono);font-size:.85rem">' +
+          COLD_START_MSG + '<span class="inline-spin"><span class="spinner"></span></span></span>';
       });
       if (!resp.ok) {
         let msg = "The design brief is unavailable right now.";
@@ -1122,7 +1188,11 @@
 
   async function loadAnalyses() {
     try {
-      const r = await fetch("/analyses");
+      const r = await fetchResilient("/analyses", { method: "GET" },
+        ANALYSES_LIST_TIMEOUT_MS, () => {
+          analysisList.innerHTML = '<span class="hint" style="color:var(--faint);font-size:.9rem">' +
+            COLD_START_MSG + "</span>";
+        });
       if (!r.ok) throw new Error("unavailable");
       analyses = (await r.json()).analyses || [];
     } catch (e) { analyses = []; }
@@ -1262,10 +1332,18 @@
     analysisDownloads.appendChild(card);
 
     try {
-      const resp = await fetch("/analysis", {
+      let woke = false;
+      const resp = await fetchResilient("/analysis", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+      }, ANALYSIS_TIMEOUT_MS, () => {
+        woke = true;
+        if (anaTimer) { clearInterval(anaTimer); anaTimer = null; }
+        analysisStatusEl.className = "status show";
+        analysisStatusEl.innerHTML = '<span class="spinner"></span><span>' + COLD_START_MSG + "</span>";
       });
+      // Server is awake — resume the rotating per-analysis progress copy.
+      if (woke) startAnaLoading();
       if (!resp.ok) {
         let msg = "HTTP " + resp.status;
         try { const e = await resp.json(); if (e && e.detail) msg = e.detail; } catch (_) {}
