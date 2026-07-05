@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Free 3D Site Plan Generator — Turn Any Address Into a Rhino Model | SiteGrab</title>
+<meta name="description" content="Generate a free 3D site plan from any address in seconds. Real building heights, terrain, and sun path — exported straight to Rhino .3dm or AutoCAD .dxf. No QGIS required.">
+<style>
+  :root {
+    --bg: #0b0a09;
+    --bg-raised: #151311;
+    --line: #2a2622;
+    --text: #f2ede4;
+    --text-dim: #a89d8e;
+    --amber: #d98e3f;
+    --amber-dim: #8a5f2e;
+    --font-display: 'Georgia', 'Iowan Old Style', serif;
+    --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'SF Mono', 'Consolas', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    line-height: 1.6;
+  }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+
+  header {
+    padding: 20px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  header .wrap { display: flex; justify-content: space-between; align-items: center; max-width: 900px; }
+  .logo { font-family: var(--font-mono); font-size: 15px; letter-spacing: 0.05em; color: var(--text); text-decoration: none; }
+  .logo span { color: var(--amber); }
+  nav a {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 14px;
+    margin-left: 24px;
+  }
+  nav a:hover { color: var(--amber); }
+
+  .hero {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 72px 24px 48px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: clamp(32px, 5vw, 48px);
+    font-weight: 400;
+    line-height: 1.15;
+    max-width: 780px;
+    margin-bottom: 20px;
+  }
+  .hero p.lede {
+    font-size: 18px;
+    color: var(--text-dim);
+    max-width: 620px;
+    margin-bottom: 32px;
+  }
+
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn-primary {
+    background: var(--amber);
+    color: #1a1410;
+    font-weight: 600;
+    padding: 13px 26px;
+    border-radius: 3px;
+    text-decoration: none;
+    font-size: 15px;
+    display: inline-block;
+  }
+  .btn-primary:hover { background: #e6a058; }
+  .cta-note { font-size: 13px; color: var(--text-dim); font-family: var(--font-mono); }
+
+  .demo-frame {
+    max-width: 900px;
+    margin: 8px auto 64px;
+    padding: 0 24px;
+  }
+  .demo-box {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--bg-raised);
+    aspect-ratio: 16/9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    text-align: center;
+    padding: 0;
+    overflow: hidden;
+  }
+  .demo-box img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .demo-caption {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 12px;
+  }
+
+  section {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 40px 24px;
+    border-top: 1px solid var(--line);
+  }
+  h2 {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 400;
+    margin-bottom: 16px;
+  }
+  p { color: var(--text-dim); margin-bottom: 14px; font-size: 16px; }
+  strong { color: var(--text); font-weight: 600; }
+
+  .step-list { counter-reset: step; margin-top: 20px; }
+  .step {
+    display: flex;
+    gap: 18px;
+    margin-bottom: 22px;
+    align-items: flex-start;
+  }
+  .step-num {
+    font-family: var(--font-mono);
+    color: var(--amber);
+    font-size: 14px;
+    border: 1px solid var(--amber-dim);
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .step-body h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+  .step-body p { margin-bottom: 0; font-size: 15px; }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 20px;
+  }
+  .compare > div { background: var(--bg-raised); padding: 20px; }
+  .compare h3 { font-size: 14px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; color: var(--text-dim); }
+  .compare ul { list-style: none; }
+  .compare li { font-size: 14px; padding: 5px 0; color: var(--text-dim); }
+  .compare .yes li:before { content: "— "; color: var(--amber); }
+  .compare .no li:before { content: "— "; color: var(--text-dim); }
+
+  .faq-item { margin-bottom: 22px; }
+  .faq-item h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+
+  footer {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 48px 24px 64px;
+    text-align: center;
+    border-top: 1px solid var(--line);
+  }
+  footer .btn-primary { margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a href="/" class="logo">SITE<span>GRAB</span></a>
+    <nav>
+      <a href="/app">Open the tool</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="eyebrow">Free 3D Site Plan Generator</div>
+  <h1>Turn any address into a 3D site plan — free, in under a minute</h1>
+  <p class="lede">Type a location or draw a boundary. SiteGrab pulls real building footprints, heights, and terrain, and hands you a ready-to-use Rhino model. No QGIS, no manual tracing, no site visit required to get started.</p>
+  <div class="cta-row">
+    <a href="/app" class="btn-primary">Generate your site plan free →</a>
+    <span class="cta-note">No account required to try it</span>
+  </div>
+</div>
+
+<div class="demo-frame">
+  <div class="demo-box">
+    <img src="/static/hero-model.png" width="1200" height="675"
+         alt="A SiteGrab site model open in Rhino: real building massing, terrain surface and the layer panel — the kind of 3D site plan generated from any address." />
+  </div>
+  <p class="demo-caption">A combined SiteGrab model open in Rhino — massing, terrain and layers.</p>
+</div>
+
+<section>
+  <h2>What you actually get</h2>
+  <p>Most "free site plan" tools online give you a flat screenshot or a rough massing block. SiteGrab generates a real, usable model built from actual data for the location you enter:</p>
+  <div class="step-list">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h3>Real building geometry, not guesses</h3>
+        <p>Footprints and heights are pulled from open mapping data, with real LiDAR-derived heights where available, so neighbouring buildings sit at their actual scale.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h3>Aligned and projected correctly</h3>
+        <p>SiteGrab auto-detects the correct UTM projection for your location, so your model lands true-to-scale and correctly oriented — no manual georeferencing.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h3>Sun path included</h3>
+        <p>Every site plan can include a sun path diagram for the exact coordinates you entered — hourly sun positions and shadow casting, generated alongside your model, not as a separate manual step.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <h3>Export straight into your workflow</h3>
+        <p>Download as a 3D Rhino <code>.3dm</code> file, a layered AutoCAD <code>.dxf</code>, or both combined — ready to drop into your existing project.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Free 3D site plan vs. the manual way</h2>
+  <p>If you've built a site model in QGIS before, you know the process: source data, clean geometry, project coordinates, export, import into your 3D software, fix scale issues. SiteGrab replaces that entire chain.</p>
+  <div class="compare">
+    <div class="yes">
+      <h3>With SiteGrab</h3>
+      <ul>
+        <li>Type an address or draw a box</li>
+        <li>Model generates in seconds</li>
+        <li>Correct projection, automatically</li>
+        <li>Sun path included by default</li>
+        <li>Export directly to Rhino or CAD</li>
+      </ul>
+    </div>
+    <div class="no">
+      <h3>Manual QGIS workflow</h3>
+      <ul>
+        <li>Source and clean OSM/GIS data</li>
+        <li>Set projection manually</li>
+        <li>Export and reimport into 3D software</li>
+        <li>Build sun path separately</li>
+        <li>Can take hours per site</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Who this is for</h2>
+  <p><strong>Architecture students</strong> who need a fast, accurate base model for studio projects without losing a day to data prep. <strong>Practising architects</strong> who want a reliable starting point for early-stage site analysis before investing time in a bespoke model. If you've ever needed a site plan and didn't have a week to build one, this is built for that moment.</p>
+</section>
+
+<section>
+  <h2>Frequently asked</h2>
+  <div class="faq-item">
+    <h3>Is it actually free?</h3>
+    <p>Yes — you can generate site plans on the free tier. A paid plan exists for higher usage and additional features, but you don't need it to try SiteGrab or produce a working model.</p>
+  </div>
+  <div class="faq-item">
+    <h3>What file formats do I get?</h3>
+    <p>3D Rhino <code>.3dm</code>, 2D AutoCAD <code>.dxf</code> with organised layers, or a combined aligned model with both.</p>
+  </div>
+  <div class="faq-item">
+    <h3>Does it work anywhere in the world?</h3>
+    <p>Yes, anywhere with available open mapping data. Building height accuracy is highest in regions with LiDAR coverage, with type-based estimation used elsewhere.</p>
+  </div>
+  <div class="faq-item">
+    <h3>Do I need QGIS or GIS experience?</h3>
+    <p>No. SiteGrab is built specifically so you don't need GIS software or experience to get a usable, correctly scaled site model.</p>
+  </div>
+</section>
+
+<footer>
+  <a href="/app" class="btn-primary">Generate your free 3D site plan →</a>
+  <p style="margin-top: 8px;">sitegrab.onrender.com</p>
+</footer>
+
+</body>
+</html>

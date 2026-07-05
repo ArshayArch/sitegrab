@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -197,6 +197,32 @@ def index() -> HTMLResponse:
 def app_page() -> HTMLResponse:
     """The tool itself — map, generate, analysis, downloads, design brief."""
     return HTMLResponse((STATIC_DIR / "app.html").read_text(encoding="utf-8"))
+
+
+@app.get("/free-3d-site-plan", response_class=HTMLResponse)
+def free_3d_site_plan() -> HTMLResponse:
+    """SEO landing page targeting 'free 3D site plan' — funnels to /app."""
+    return HTMLResponse(
+        (STATIC_DIR / "free-3d-site-plan.html").read_text(encoding="utf-8")
+    )
+
+
+@app.get("/sitemap.xml")
+def sitemap() -> Response:
+    """XML sitemap for search engines (homepage, tool, SEO landing page)."""
+    return Response(
+        (STATIC_DIR / "sitemap.xml").read_text(encoding="utf-8"),
+        media_type="application/xml",
+    )
+
+
+@app.get("/robots.txt")
+def robots() -> Response:
+    """Allow-all robots policy pointing crawlers at the sitemap."""
+    return Response(
+        (STATIC_DIR / "robots.txt").read_text(encoding="utf-8"),
+        media_type="text/plain",
+    )
 
 
 @app.get("/health")

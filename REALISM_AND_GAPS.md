@@ -971,3 +971,137 @@ produced: not "pay for a nicer model," but "pay to model the site you actually h
 counter to wire next is *how often real traffic hits each ceiling* — a guard tripped by
 1 % of sessions is a fair Pro gate; one tripped by 30 % is a broken free tier masquerading
 as a paywall, and the analytics must tell those apart before any billing line is drawn.
+
+## v10.2 — SEO landing page: "free 3D site plan" (standing method: conjecture & refutation)
+
+v10.2 is the first version aimed at *acquisition* rather than the product itself: a
+dedicated page at `/free-3d-site-plan`, styled in its own dark/amber theme, targeting the
+search query an architecture student actually types. The tool is unchanged; the bet is
+that a purpose-built page for one keyword out-ranks and out-converts the generic `/`
+homepage for that intent. The standing method now points at a third target — not "is the
+model honest?" nor "does the page convert?" but "will anyone searching ever *see* this
+page, and would we know if they did?"
+
+### 1. Problem — what this addition leaves unfinished
+
+- **The page carries no analytics at all.** The homepage ships GA4 (`G-6VSPZVNF5V`); this
+  page ships nothing. Every CTA click, scroll, and bounce on the one page whose entire
+  purpose is measurable acquisition is currently invisible. We cannot tell an indexed page
+  with zero traffic from a page getting traffic that doesn't convert — the two failures
+  that demand opposite fixes look identical. This is the single largest gap and, unlike a
+  content gap, it is silent.
+- **The demo asset is real but is the homepage's screenshot, and it is still.** Task 2 was
+  satisfied honestly — `static/hero-model.png` (a *real* Rhino screenshot, not the grey
+  placeholder) now fills the demo box, so nothing fake shipped. But it is (a) the *same*
+  image the homepage hero uses, so a visitor arriving `/` → footer → landing sees one shot
+  twice, and (b) a static frame where the placeholder copy literally promised a *screen
+  recording of the generation happening*. For "free 3D site plan" search intent a credible
+  still is adequate; it is not the demonstration the box described.
+- **Indexing is assumed, not secured.** Nothing here makes Google crawl or rank the page.
+  It lives on an `onrender.com` subdomain (borrowed authority, near zero), it is one thin
+  page for a query with real commercial competition, and the sitemap has not been submitted
+  to Search Console (I have no access to that console).
+- **No variant, no experiment.** One page, one CTA, one headline. There is no A/B path, so
+  even once analytics exist, the page can be measured but not *improved by comparison* —
+  only replaced wholesale.
+
+### 2. Conjectured solutions
+
+- **C1 — Add the GA4 snippet to this page** (same measurement ID as `/`), plus an event on
+  the CTA clicks. Make the acquisition page measurable before spending effort ranking it.
+- **C2 — Submit the sitemap to Search Console and request indexing** for the three URLs;
+  the internal footer link from `/` already gives a crawl path, this makes it active.
+- **C3 — A real custom domain** (`sitegrab.com`) so the SEO bet accrues authority to an
+  asset we own rather than a Render subdomain.
+- **C4 — The motion demo GIF/video** (carried from v10's C2) embedded above the fold in
+  place of, or beside, the static screenshot.
+- **C5 — Programmatic per-city pages** ("free 3D site plan · <city>") generated from the
+  same template, chasing long-tail intent at volume.
+- **C6 — A/B the headline + CTA copy** once analytics can score the variants.
+
+### 3. Criticism — attack each
+
+- **C1** is not falsifiable by building it (a tag proves nothing on its own), but it is the
+  precondition for every other conjecture being *testable at all* — without it C2–C6 are
+  faith. Its only risk is triviality masquerading as progress: a tag that fires but that
+  nobody reads is the same as no tag. **Falsifier that matters:** the GA4 real-time view
+  shows zero events after a known visit → the snippet is misplaced or the ID is wrong.
+- **C2** attacks the assumption that *publishing* equals *being found*. It is necessary but
+  weak alone: submission gets a page *crawled*, not *ranked*. **Falsifier:**
+  `site:sitegrab.onrender.com/free-3d-site-plan` returns nothing 2–3 weeks after
+  submission → crawling itself stalled (robots, canonical, or thin-content suppression),
+  not just ranking. **Fallback if indexing stalls:** the page still earns its keep as the
+  link target for any off-site post (Reddit/LinkedIn/TikTok bio) — direct and referral
+  traffic don't need Google — so the SEO bet failing does not strand the asset.
+- **C3** is the real ranking lever and the honest diagnosis of why C2 will under-deliver:
+  domain authority, not on-page content, is the binding constraint for a competitive
+  commercial query. But it is the highest-friction item (purchase, DNS, HTTPS, updating
+  every hard-coded `sitegrab.onrender.com` in the sitemap/robots/footer) and it is
+  premature to pay for authority to a page we can't yet measure (C1) or prove crawlable
+  (C2). **Falsifier:** even after a custom domain, rank for the target query doesn't move
+  in 60–90 days → the constraint was content depth or backlinks, not the domain.
+- **C4** is the strongest *conversion* lever but the weakest-justified *here*: it fights
+  the v10 fight (TikTok wants motion) on a page whose traffic is search, which arrives
+  wanting to read what it gets and click. A janky recording is worse than the honest still
+  already shipped. **Falsifier:** once C1 exists, a cohort seeing the GIF converts no
+  better than one seeing the screenshot → motion wasn't the bottleneck for search traffic.
+- **C5** is the highest-ceiling monetisation play (long-tail volume compounds) and the
+  most dangerous: templated near-duplicate "doorway" pages are exactly what Google's thin-
+  content and doorway penalties target, and shipping 200 of them off one dataset could
+  suppress the *whole* subdomain, not just the weak pages. **Falsifier:** a 5-page pilot's
+  indexed pages hold rank for a month without dragging `/` down → the pattern is safe to
+  scale. Do not scale before that pilot.
+- **C6** is real but strictly downstream of C1 — an A/B with no analytics is theatre. It
+  also needs traffic volume this page does not yet have to reach significance, so it is
+  premature twice over.
+
+### 4. Replacement — ranked shortlist for v11
+
+Ranked by **real demand × how unserved × feasibility × monetisation potential** (the
+standing rubric):
+
+1. **C1 — GA4 on this page (+ CTA event).** Trivial feasibility, and it is the gate every
+   other item's *evidence* passes through. Zero monetisation on its own, infinite as a
+   multiplier: without it the whole acquisition bet is unfalsifiable. Do first, this week.
+2. **C2 — Submit sitemap to Search Console, request indexing.** Low effort (a manual
+   console action the human operator must do — I cannot), directly serves the page's one
+   job. Ranked above the domain because a crawlable page on a weak domain still beats an
+   uncrawled page on a strong one.
+3. **C3 — Custom domain.** The genuine ranking constraint and a durable owned asset that
+   compounds for *every* future SEO page. Higher friction, so sequenced after the cheap
+   measurement/indexing steps prove the funnel is worth the domain's cost.
+4. **C4 — Motion demo.** Real conversion lift, but mis-aimed at search intent and higher
+   effort; run it as a measured swap *after* C1 can score it, not on faith.
+5. **C5 — Programmatic city pages.** Highest monetisation ceiling via long-tail volume and
+   genuinely unserved, but penalty-fragile; gated behind a 5-page pilot that must prove it
+   doesn't poison the subdomain before scaling.
+6. **C6 — A/B copy.** Downstream of both analytics (C1) and traffic; parked until both
+   exist.
+
+### 5. New problem — a second front door widens the promise-gap
+
+The homepage already writes cheques the backend must cash (v10 §5: "two minutes,"
+"surveyed LiDAR," the free/Pro line no billing enforces). This page **adds a second, more
+specific promise to a more specific audience** — "free 3D site plan in under a minute, sun
+path included" — and routes a *colder* visitor (a stranger from a search result, with no
+context) straight at the same `/app` cold start, England-only LiDAR boundary, and ~5 km
+cap. A search visitor is less forgiving than a referral: they did not come on a
+recommendation, they came on a keyword, and the first friction confirms their default
+scepticism. So the SEO win and the product's honesty limits are now in direct tension —
+the better this page ranks, the more first-time strangers meet the free tier's ceilings
+with no goodwill banked. The page also hard-codes `sitegrab.onrender.com` into the
+sitemap, robots, and its own footer copy, quietly deepening the coupling to a domain the
+C3 shortlist says we should leave — every SEO asset added now is one more thing to rewrite
+when the domain moves.
+
+### Monetisation note — you cannot price what you cannot count
+
+This version's monetisation value is *entirely* contingent on C1. An acquisition page with
+no analytics is not a weak monetisation instrument — it is a *zero* one, because the funnel
+it feeds is unobservable end to end: we would see waitlist signups (v10's counter) but have
+no way to attribute them to this page versus `/`, and so no way to know whether the SEO bet
+returns anything. The honest reading is that v10.2 shipped the *asset* but not the
+*instrument*: the page can convert, but until GA4 is on it and the CTA fires an event, any
+claim that it does — or doesn't — is unfalsifiable, and an unfalsifiable conversion claim
+is exactly the kind of vanity signal the v10 monetisation note warned against reading as
+proof. Measure first; rank, restyle, and pay for a domain second.
