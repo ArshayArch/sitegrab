@@ -1105,3 +1105,79 @@ returns anything. The honest reading is that v10.2 shipped the *asset* but not t
 claim that it does — or doesn't — is unfalsifiable, and an unfalsifiable conversion claim
 is exactly the kind of vanity signal the v10 monetisation note warned against reading as
 proof. Measure first; rank, restyle, and pay for a domain second.
+
+## v10.3 — Mirror ordering: stop paying the timeout tax for a known-slow server (standing method: conjecture & refutation)
+
+### 1. Problem — the fallback that never got to fall back in time
+
+v10.1 gave `fetch_overpass` a hard 30 s total ceiling and a 12 s per-attempt cap, which
+bounds the *wait* but says nothing about the *order*. The mirror list was always tried
+`overpass-api.de` → `overpass.kumi.systems`, unconditionally, on every single request. If
+`overpass-api.de` is having a slow or congested moment — the exact condition the fallback
+exists for — every request still burns up to 12 s (or the current `remaining` budget)
+knocking on a door that isn't answering, before the mirror that might have responded in
+under a second ever gets tried. On a request with, say, 18 s of budget left after
+geocoding, that first doomed attempt can eat two-thirds of it. The failover existed but was
+blind: it had no memory of which mirror was actually working *right now*.
+
+### 2. Conjectured solutions
+
+- **M1 — Persistent health store (Redis / a file).** Track mirror latency/failure durably
+  so ordering survives restarts.
+- **M2 — In-process rolling health tracker.** A module-level dict recording each mirror's
+  last failure time and last successful latency; order mirrors by that on every call.
+- **M3 — Ping both mirrors concurrently, race them.** Fire both, take whichever answers
+  first, cancel the other.
+
+### 3. Criticism — attack each
+
+- **M1** adds a dependency (Redis) or a shared-file write path for a free-tier single-dyno
+  app that has no other persistence need — pure accidental complexity for a problem that
+  restarts on every Render redeploy anyway (the dyno itself is stateless between deploys,
+  so "persistent" health data would be stale as often as it would be useful).
+- **M3** is the theoretically best latency outcome but doubles Overpass request volume
+  against public, rate-limited, donated infrastructure — directly conflicts with the
+  "data-source etiquette" this file's mirror-swap comment already commits to. Racing two
+  requests to save a few seconds on the failover path is not worth taxing a public good
+  twice as hard.
+- **M2** is the one that matches the actual failure mode. Its weakness is honestly named in
+  its own docstring: state resets on every restart, so a fresh deploy always starts blind
+  and re-learns which mirror is having a bad day from scratch. Accepted trade — matches the
+  existing v10.1 stance on in-process-only tracking (no new persistence surface), and the
+  cost of "blind for the first request after a redeploy" is bounded by the same 30 s ceiling
+  that already existed.
+
+### 4. Replacement — what shipped
+
+**M2.** `fetch_core._mirror_state` is a plain in-process `dict[endpoint, {last_failure_at,
+last_latency}]`, no locking (worst case under concurrent requests is a slightly stale
+ordering choice, never a crash — acceptable for a free-tier single-instance deploy).
+`_order_mirrors()` runs once per `fetch_overpass()` call: a mirror that failed within the
+last 150 s (`MIRROR_FAILURE_COOLDOWN`) is pushed to the back regardless of anything else;
+among the rest, the one with the faster last successful response goes first; with no
+history at all — a fresh deploy, or a mirror that's never been hit — ties resolve to the
+originally declared order, so behaviour degrades exactly to pre-v10.3 when there's nothing
+to learn from yet. Every ordering decision that changes the default is logged, e.g.
+`[overpass] trying overpass.kumi.systems/api/interpreter first (failed 12s ago);
+overpass-api.de/api/interpreter deprioritized (...)`, so a Render-log read explains *why*
+a request went to the "second" mirror first. The existing 30 s total / 12 s per-attempt
+ceilings are unchanged — this is purely an ordering change, not a budget increase.
+
+### 5. New problem — a hint, not a guarantee
+
+The tracker only ever reflects *this dyno's* recent experience — a single Render instance
+with in-process memory, not a fleet-wide view. If Render is running multiple instances (it
+isn't today, but the free→paid path could add this), each would relearn mirror health
+independently, which is fine but means the "smart" ordering is really "smart per-process."
+More importantly, a 150 s cooldown is a guess, not a measurement: too short and a genuinely
+still-struggling mirror gets retried needlessly; too long and a mirror that recovered in 20 s
+stays deprioritized for two extra minutes of otherwise-avoidable second-mirror traffic. There
+is no feedback signal yet on how often the deprioritization actually fires in production, so
+the 150 s figure is a reasonable-sounding number, not a validated one — the honest next step
+is logging how often `_order_mirrors` changes the default, not tuning the constant further
+in the dark.
+
+### Monetisation note — none
+
+This is a reliability fix on a free public data source, not a product surface — no pricing
+signal to extract here. Filed for completeness, not because every version needs one.

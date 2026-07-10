@@ -1,7 +1,9 @@
 """SiteGrab shared pipeline core.
 
 Geocoding (Nominatim) + UTM zone detection + Overpass fetch with mirror
-failover and exponential backoff. Shared by both the Rhino and DXF writers.
+failover and exponential backoff. Mirror ordering is history-aware: a mirror
+that failed recently is tried second, see ``_order_mirrors``. Shared by both
+the Rhino and DXF writers.
 
 The Nominatim bounding-box ordering and the UTM formula are subtle and easy
 to get wrong; they are correct as written here and must not be changed.
@@ -60,6 +62,65 @@ OVERPASS: list[str] = [
 # is also capped so a single slow mirror can't eat the whole budget.
 OVERPASS_TOTAL_TIMEOUT: float = 30.0
 OVERPASS_PER_ATTEMPT_TIMEOUT: float = 12.0
+
+# In-process mirror health, keyed by endpoint URL. Reset on every restart
+# (Render redeploys wipe it) — that's an acceptable simplification for a
+# free-tier tool, see REALISM_AND_GAPS.md v10.3. Each entry holds at most
+# ``last_failure_at`` (monotonic seconds) and ``last_latency`` (seconds of the
+# most recent successful response). No locking: worst case under concurrent
+# requests is a slightly stale ordering decision, never a crash.
+_mirror_state: dict[str, dict[str, float]] = {}
+
+# How long a mirror stays deprioritized after a failure/timeout before it's
+# considered "healthy again" and re-enters normal (latency-based) ordering.
+MIRROR_FAILURE_COOLDOWN: float = 150.0
+
+
+def _record_mirror_result(
+    endpoint: str, success: bool, latency: float | None = None
+) -> None:
+    state = _mirror_state.setdefault(endpoint, {})
+    if success:
+        state.pop("last_failure_at", None)
+        if latency is not None:
+            state["last_latency"] = latency
+    else:
+        state["last_failure_at"] = time.monotonic()
+
+
+def _order_mirrors() -> list[str]:
+    """Decide which mirror to try first, based on recent in-process history.
+
+    A mirror that failed within ``MIRROR_FAILURE_COOLDOWN`` seconds is pushed
+    to the back. Among the rest, the one with the faster last successful
+    response goes first. With no history at all (e.g. right after a fresh
+    deploy) this degrades to the declared ``OVERPASS`` order.
+    """
+    now = time.monotonic()
+
+    def score(endpoint: str) -> tuple[float, str]:
+        state = _mirror_state.get(endpoint, {})
+        failure_at = state.get("last_failure_at")
+        if failure_at is not None and (now - failure_at) < MIRROR_FAILURE_COOLDOWN:
+            age = now - failure_at
+            return 1000.0 + age, f"failed {age:.0f}s ago"
+        latency = state.get("last_latency")
+        if latency is not None:
+            return latency, f"last responded in {latency:.1f}s"
+        return 100.0, "no history"
+
+    scored = [(endpoint,) + score(endpoint) for endpoint in OVERPASS]
+    scored.sort(key=lambda t: t[1])  # stable: ties keep the declared order
+    ordered = [endpoint for endpoint, _, _ in scored]
+
+    if ordered[0] != OVERPASS[0]:
+        first_reason = scored[0][2]
+        skipped_reason = next(r for e, _, r in scored if e == OVERPASS[0])
+        print(
+            f"[overpass] trying {ordered[0]} first ({first_reason}); "
+            f"{OVERPASS[0]} deprioritized ({skipped_reason})"
+        )
+    return ordered
 
 
 def geocode(name: str) -> tuple[float, float, float, float, str]:
@@ -137,6 +198,7 @@ def fetch_overpass(
     that is treated as retryable rather than a hard failure.
     """
     start = time.monotonic()
+    mirror_order = _order_mirrors()
     last: str | None = None
     attempt = 0
     while True:
@@ -146,7 +208,8 @@ def fetch_overpass(
                 f"Overpass did not respond within {total_timeout:.0f}s "
                 f"(last: {last or 'no response'})."
             )
-        endpoint = OVERPASS[attempt % len(OVERPASS)]
+        endpoint = mirror_order[attempt % len(mirror_order)]
+        attempt_start = time.monotonic()
         try:
             body = urllib.parse.urlencode({"data": query}).encode()
             req = urllib.request.Request(endpoint, data=body, headers=UA)
@@ -155,11 +218,14 @@ def fetch_overpass(
             with urllib.request.urlopen(req, timeout=attempt_timeout) as r:
                 txt = r.read().decode()
             if txt.strip().startswith("{"):
+                _record_mirror_result(endpoint, True, time.monotonic() - attempt_start)
                 return json.loads(txt)
             last = "server busy"
+            _record_mirror_result(endpoint, False)
         except Exception as ex:  # noqa: BLE001 - any network error is retryable
             last = str(ex)
             print(f"[overpass] attempt {attempt + 1} on {endpoint} failed: {ex}")
+            _record_mirror_result(endpoint, False)
         attempt += 1
         # Backoff, but never sleep past the remaining budget.
         remaining = total_timeout - (time.monotonic() - start)
